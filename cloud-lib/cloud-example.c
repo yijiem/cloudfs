@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "cloudapi.h"
-#include "cloudfs.h"
+#include "../cloudfs/cloudfs.h"
 
 int list_bucket(const char *key, time_t modified_time, uint64_t size) {
   fprintf(stdout, "%s %lu %llu\n", key, modified_time, size);
