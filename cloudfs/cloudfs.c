@@ -53,9 +53,10 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
  * @param  unused param
  * @return void
  */
-void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
+static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
-    cloudfs_error(__FUNC__, "\n");
+    printf("WTF????\n");
+    cloudfs_error(__func__, "wtf");
     cloud_init(state_.hostname);
     return NULL;
 }
@@ -66,25 +67,28 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  * @param  unused param
  * @retrun void
  */
-void cloudfs_destroy(void *data UNUSED) {
-    cloudfs_error(__FUNC__, "\n");
+static void cloudfs_destroy(void *data UNUSED) {
+    cloudfs_error(__func__, "wtf");
     cloud_destroy();
 }
 
-int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
+static int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
 {
-    cloudfs_error(__FUNC__, "\n");
+    cloudfs_error(__func__, "wtf");
     int retval = 0;
     return retval;
 }
 
-int cloudfs_mkdir(const char *path UNUSED, mode_t mode UNUSED){
-    cloudfs_error(__FUNC__, "\n");
+static int cloudfs_mkdir(const char *path, mode_t mode){
+    cloudfs_error(__func__, "wtf");
+	printf("WTF!!!");
+
     return 0;
 }
 
-int cloudfs_open(const char *path UNUSED, struct fuse_file_info* fi UNUSED){
-    cloudfs_error(__FUNC__, "\n");
+static int cloudfs_open(const char *path UNUSED, struct fuse_file_info* fi UNUSED){
+    cloudfs_error(__func__, "wtf");
+   printf("a");
     return 0;
 }
 
@@ -95,6 +99,7 @@ static struct fuse_operations cloudfs_operations = {
     .init           = cloudfs_init,
     .open           = cloudfs_open,
     .mkdir          = cloudfs_mkdir,
+    .getattr        = cloudfs_getattr,
     .destroy        = cloudfs_destroy
 };
 
