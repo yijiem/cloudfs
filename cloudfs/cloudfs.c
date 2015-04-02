@@ -100,41 +100,6 @@ static struct fuse_operations cloudfs_operations = {
     // --- http://fuse.sourceforge.net/doxygen/structfuse__operations.html
     //
     //
-    .destroy        = cloudfs_destroy,
-    .getattr        = cloudfs_getattr,
-    .getxattr       = NULL,
-    .setxattr       = NULL,
-    .listxattr      = NULL,
-    .removexattr    = NULL,
-    .mkdir          = NULL,
-    .rmdir          = NULL,
-    .rename         = NULL,
-    .open           = NULL,
-    .read           = NULL,
-    .write          = NULL,
-    .flush          = NULL,
-    .release        = NULL,
-    .create         = NULL,
-    .access         = NULL,
-    .opendir        = NULL,
-    .releasedir     = NULL,
-    .readdir        = NULL,
-    .readlink       = NULL,
-    .mknod          = NULL,
-    .unlink         = NULL,
-    .symlink        = NULL,
-    .link           = NULL,
-    .chmod          = NULL,
-    .chown          = NULL,
-    .truncate       = NULL,
-    .statfs         = NULL,
-    .fsync          = NULL,
-    .utimens        = NULL,
-    .ftruncate      = NULL,
-    .fgetattr       = NULL
-    .getattr        = NULL,
-    .mkdir          = NULL,
-    .readdir        = NULL,
     .destroy        = cloudfs_destroy
 };
 
@@ -151,10 +116,8 @@ int cloudfs_start(struct cloudfs_state *state,
   //argv[argc++] = "-f"; // run fuse in foreground 
 
   state_  = *state;
-  
-  return 1;
 
-  // int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
+  int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
     
-  // return fuse_stat;
+  return fuse_stat;
 }
