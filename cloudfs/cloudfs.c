@@ -22,28 +22,37 @@
 
 static struct cloudfs_state state_;
 
-static int UNUSED cloudfs_error(char *error_str)
+#define DEBUG_CLOUDFS
+
+/* @brief Debug function for cloudfs, if define DEBUG_CLOUDFS, this function will print
+ *        debug infomation. Otherwise, it won't.
+ * 
+ * @param  func: pointer to the function name
+ * @param  error_str: error message
+ * @return retval: -errno
+ */
+#ifdef DEBUG_CLOUDFS
+inline int cloudfs_error(const char *func, const char *error_str)
+#else 
+inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
+#endif
 {
     int retval = -errno;
 
-    // TODO:
-    //
-    // You may want to add your own logging/debugging functions for printing
-    // error messages. For example:
-    //
-    // debug_msg("ERROR happened. %s\n", error_str, strerror(errno));
-    //
-    
-    fprintf(stderr, "CloudFS Error: %s\n", error_str);
+#ifdef DEBUG_CLOUDFS    
+    /* Can change this line into log-styler debug function if necessary */
+    fprintf(stderr, "CloudFS Error: Func[%s]:%s\n", func, error_str);
+#endif
 
-    /* FUSE always returns -errno to caller (yes, it is negative errno!) */
     return retval;
 }
 
-/*
- * Initializes the FUSE file system (cloudfs) by checking if the mount points
- * are valid, and if all is well, it mounts the file system ready for usage.
- *
+
+/* @brief Initializes the FUSE file system (cloudfs) by checking if the mount points
+ *        are valid, and if all is well, it mounts the file system ready for usage.
+ * 
+ * @param  unused param
+ * @return void
  */
 void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
@@ -51,6 +60,12 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
   return NULL;
 }
 
+/* @brief Deinitialize S3. After this call is complete, no libs3 function may be
+ *        called except S3_initialize().
+ *
+ * @param  unused param
+ * @retrun void
+ */
 void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
 }
@@ -71,8 +86,7 @@ int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
 /*
  * Functions supported by cloudfs 
  */
-static 
-struct fuse_operations cloudfs_operations = {
+static struct fuse_operations cloudfs_operations = {
     .init           = cloudfs_init,
     //
     // TODO
@@ -86,6 +100,38 @@ struct fuse_operations cloudfs_operations = {
     // --- http://fuse.sourceforge.net/doxygen/structfuse__operations.html
     //
     //
+    .destroy        = cloudfs_destroy,
+    .getattr        = cloudfs_getattr,
+    .getxattr       = NULL,
+    .setxattr       = NULL,
+    .listxattr      = NULL,
+    .removexattr    = NULL,
+    .mkdir          = NULL,
+    .rmdir          = NULL,
+    .rename         = NULL,
+    .open           = NULL,
+    .read           = NULL,
+    .write          = NULL,
+    .flush          = NULL,
+    .release        = NULL,
+    .create         = NULL,
+    .access         = NULL,
+    .opendir        = NULL,
+    .releasedir     = NULL,
+    .readdir        = NULL,
+    .readlink       = NULL,
+    .mknod          = NULL,
+    .unlink         = NULL,
+    .symlink        = NULL,
+    .link           = NULL,
+    .chmod          = NULL,
+    .chown          = NULL,
+    .truncate       = NULL,
+    .statfs         = NULL,
+    .fsync          = NULL,
+    .utimens        = NULL,
+    .ftruncate      = NULL,
+    .fgetattr       = NULL
     .getattr        = NULL,
     .mkdir          = NULL,
     .readdir        = NULL,
@@ -105,8 +151,10 @@ int cloudfs_start(struct cloudfs_state *state,
   //argv[argc++] = "-f"; // run fuse in foreground 
 
   state_  = *state;
+  
+  return 1;
 
-  int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
+  // int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
     
-  return fuse_stat;
+  // return fuse_stat;
 }
