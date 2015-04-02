@@ -88,7 +88,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     
     fd = open(path, fi->flags);
     if (fd == -1)
-        return -Errno;
+        return -errno;
 
     fi->fh = fd;
     return 0;
@@ -99,7 +99,7 @@ int cloudfs_mkdir(const char *path, mode_t m) {
     
     res = mkdir(path, m);
     if (res == -1)
-        return -Errno;
+        return -errno;
     
     return res;
 }
