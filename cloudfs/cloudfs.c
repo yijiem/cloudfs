@@ -83,6 +83,27 @@ int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
   return retval;
 }
 
+int cloudfs_open(const char *path, struct fuse_file_info *fi) {
+    int fd;
+    
+    fd = open(path, fi->flags);
+    if (fd == -1)
+        return -Errno;
+
+    fi->fh = fd;
+    return 0;
+}
+
+int cloudfs_mkdir(const char *path, mode_t m) {
+    int res;
+    
+    res = mkdir(path, m);
+    if (res == -1)
+        return -Errno;
+    
+    return res;
+}
+
 /*
  * Functions supported by cloudfs 
  */
@@ -100,7 +121,9 @@ static struct fuse_operations cloudfs_operations = {
     // --- http://fuse.sourceforge.net/doxygen/structfuse__operations.html
     //
     //
-    .destroy        = cloudfs_destroy
+    .mkdir          = cloudfs_mkdir,
+    .open           = cloudfs_open,
+    .destroy        = cloudfs_destroy,
 };
 
 int cloudfs_start(struct cloudfs_state *state,
