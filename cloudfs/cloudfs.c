@@ -19,8 +19,11 @@
 #include "cloudfs.h"
 #include "dedup.h"
 
+
 #define UNUSED __attribute__((unused))
 
+#define LOCAL_PATH "Local_Files"
+static FILE *cloudfs_log;
 static struct cloudfs_state state_;
 
 #define DEBUG_CLOUDFS
@@ -32,6 +35,32 @@ static struct cloudfs_state state_;
  * @param  error_str: error message
  * @return retval: -errno
  */
+void write_log(const char *func, const char *msg){
+    int msg_len;
+    int func_len;
+    int time_len;
+    int total_len;
+    time_t rawtime;
+    struct tm *timeinfo;
+    char *msg_all;
+    char *time_str;
+   
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+    time_str = asctime(timeinfo);
+    msg_len = strlen(msg);
+    func_len = strlen(func);
+    time_len = strlen(time_str);
+    time_str[time_len - 1] = ' ';
+    total_len = msg_len + func_len + time_len;
+    msg_all = malloc(total_len);
+    strcpy(msg_all, time_str);
+    strcat(msg_all, func);
+    strcat(msg_all, msg);
+    fwrite(msg_all, 1, total_len, cloudfs_log);
+    free(msg_all);
+    return;
+}
 #ifdef DEBUG_CLOUDFS
 inline int cloudfs_error(const char *func, const char *error_str)
 #else 
@@ -42,10 +71,56 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
 
 #ifdef DEBUG_CLOUDFS    
     /* Can change this line into log-styler debug function if necessary */
-    fprintf(stderr, "CloudFS Error: Func[%s]:%s\n", func, error_str);
+    // sprintf(stderr, "CloudFS Error: Func[%s]:%s\n", func, error_str);
+    write_log(func, error_str);
 #endif
 
     return retval;
+}
+
+/*
+ * USED for local SSD operations:
+ */
+static char* get_local_path(const char* path){
+     char* local_path = (char*)malloc(strlen(state_.ssd_path)+
+                        strlen(LOCAL_PATH) + strlen(path) + 2);
+     
+     if(local_path == NULL){
+     	return NULL;
+     }else{
+     	sprintf(local_path,"%s/%s%s", state_.ssd_path, LOCAL_PATH, path);
+     }
+     return local_path;
+}
+
+static int local_open(const char *path, struct fuse_file_info *fi, mode_t m){
+     char *local_path = get_local_path(path);
+     if(local_path == NULL)
+	return -1;
+     
+     int ret = 0;
+     if(m == 0){
+     	ret = open(local_path, fi->flags);
+     }else{
+     	ret = open(local_path, fi->flags, m);
+     }
+     free(local_path);
+     if(ret != -1){
+        fi->fh = ret;
+        ret = 0;	
+     }
+     return ret;
+}
+
+static int local_mkdir(const char* path, mode_t m){
+    char *local_path = get_local_path(path); 
+    if(local_path == NULL){
+	return -1;
+    }
+    int ret = 0;
+    ret = mkdir(local_path, m);
+    free(local_path);
+    return ret;
 }
 
 /* @brief Initializes the FUSE file system (cloudfs) by checking if the mount points
@@ -59,7 +134,7 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
   cloud_init(state_.hostname);
 
   printf("cloudfs_init()...\n");
-
+  cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
   return NULL;
 }
 
@@ -82,25 +157,19 @@ static int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
 }
 
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
-    int fd;
-    
-    printf("can you see this?\n");
-    fd = open(path, fi->flags);
-    if (fd == -1)
-        return -errno;
-
-    fi->fh = fd;
+    cloudfs_error(__func__, "got here");
+    if(local_open(path, fi, 0))
+	return -errno;
     return 0;
 }
 
 static int cloudfs_mkdir(const char *path, mode_t m) {
-    int res;
-    
-    res = mkdir(path, m);
-    if (res == -1)
-        return -errno;
-    
-    return res;
+    cloudfs_error(__func__, "got here");
+    int ret = 0;
+    if(local_mkdir(path, m)){
+	ret = -errno;
+    }
+    return ret;
 }
 
 static int cloudfs_rmdir(const char *path){
