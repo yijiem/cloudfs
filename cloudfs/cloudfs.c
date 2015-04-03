@@ -47,7 +47,6 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
     return retval;
 }
 
-
 /* @brief Initializes the FUSE file system (cloudfs) by checking if the mount points
  *        are valid, and if all is well, it mounts the file system ready for usage.
  * 
@@ -56,8 +55,9 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
  */
 void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
-  cloud_init(state_.hostname);
-  return NULL;
+    cloudfs_error(__FUNC__, "\n");
+    cloud_init(state_.hostname);
+    return NULL;
 }
 
 /* @brief Deinitialize S3. After this call is complete, no libs3 function may be
@@ -67,20 +67,25 @@ void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  * @retrun void
  */
 void cloudfs_destroy(void *data UNUSED) {
-  cloud_destroy();
+    cloudfs_error(__FUNC__, "\n");
+    cloud_destroy();
 }
 
 int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
 {
-  int retval = 0;
+    cloudfs_error(__FUNC__, "\n");
+    int retval = 0;
+    return retval;
+}
 
-  // 
-  // TODO:
-  //
-  // Implement this function to do whatever it is supposed to do!
-  //
+int cloudfs_mkdir(const char *path UNUSED, mode_t mode UNUSED){
+    cloudfs_error(__FUNC__, "\n");
+    return 0;
+}
 
-  return retval;
+int cloudfs_open(const char *path UNUSED, struct fuse_file_info* fi UNUSED){
+    cloudfs_error(__FUNC__, "\n");
+    return 0;
 }
 
 /*
@@ -88,18 +93,8 @@ int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
  */
 static struct fuse_operations cloudfs_operations = {
     .init           = cloudfs_init,
-    //
-    // TODO
-    //
-    // This is where you add the VFS functions that your implementation of
-    // MelangsFS will support, i.e. replace 'NULL' with 'melange_operation'
-    // --- melange_getattr() and melange_init() show you what to do ...
-    //
-    // Different operations take different types of parameters. This list can
-    // be found at the following URL:
-    // --- http://fuse.sourceforge.net/doxygen/structfuse__operations.html
-    //
-    //
+    .open           = cloudfs_open,
+    .mkdir          = cloudfs_mkdir,
     .destroy        = cloudfs_destroy
 };
 

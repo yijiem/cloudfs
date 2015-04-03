@@ -43,8 +43,8 @@ static struct option longOptionsG[] =
 static void parse_arguments(int argc, char* argv[], 
                             struct cloudfs_state *state) {
     // Default Values
-    strcpy(state->ssd_path, "/home/student/mnt/ssd/");
-    strcpy(state->fuse_path, "/home/student/mnt/fuse/");
+    strcpy(state->ssd_path, "/home/student/mnt/ssd");
+    strcpy(state->fuse_path, "/home/student/mnt/fuse");
     strcpy(state->hostname, "localhost:8888");
     state->ssd_size = 1024*1024*1024;
     state->threshold = 64*1024;
