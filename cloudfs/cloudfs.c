@@ -19,8 +19,36 @@
 #include "dedup.h"
 
 #define UNUSED __attribute__((unused))
+#define MESSAGE_LENGTH 30 // single message length
 
 static struct cloudfs_state state_;
+static FILE *cloudfs_log;
+
+void write_log(const char *message) {
+  int res;
+  int mes_length;
+  int time_length;
+  int total_length;
+  time_t rawtime;
+  struct tm *timeinfo;
+  char *message_all;
+  char *time_str;
+
+  time(&rawtime);
+  timeinfo = localtime(&rawtime);
+  time_str = asctime(timeinfo);
+  mes_length = strlen(message);
+  time_length = strlen(time_str);
+  time_str[time_length-1] = ' '; // replace last \n with ' '
+  total_length = mes_length + time_length;
+  message_all = malloc(total_length);
+  strcpy(message_all, time_str);
+  strcat(message_all, message);
+  res = fwrite(message_all, 1, total_length, cloudfs_log);
+  if (res != total_length) {
+    fprintf(stderr, "write_log() error...\n");
+  }
+}
 
 #define DEBUG_CLOUDFS
 
@@ -56,9 +84,16 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
  */
 static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
+  int err;
+
   cloud_init(state_.hostname);
 
-  printf("cloudfs_init()...\n");
+  cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
+  err = errno;
+  if (err != 0) {
+    fprintf(stderr, "create log fail! errno=%d\n", err);
+  }
+  write_log("create log success...\n");
 
   return NULL;
 }
@@ -88,12 +123,15 @@ int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
 
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
-    
-    printf("can you see this?\n");
-    fd = open(path, fi->flags);
-    if (fd == -1)
-        return -errno;
 
+    fd = open(path, fi->flags);
+    if (fd == -1) {
+        write_log("open error!\n");
+        return -errno;
+    }
+    write_log("open success...\n");
+    write_log("path=\n");
+    write_log(path);
     fi->fh = fd;
     return 0;
 }
@@ -102,9 +140,11 @@ static int cloudfs_mkdir(const char *path, mode_t m) {
     int res;
     
     res = mkdir(path, m);
-    if (res == -1)
+    if (res == -1) {
+	write_log("mkdir error!\n");
         return -errno;
-    
+    }
+    write_log("mkdir success...\n");
     return res;
 }
 
@@ -140,13 +180,15 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  // argv[argc++] = "-f"; // run fuse in foreground 
+  argv[argc++] = "-f"; // run fuse in foreground 
 
   state_  = *state;
 
   printf("I am here\n");
-  // open("/home/student/log", )
+
   int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
+
+  fclose(cloudfs_log);
 
   return fuse_stat;
 }
