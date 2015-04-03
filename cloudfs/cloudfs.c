@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <fuse.h>
 #include <getopt.h>
+#include <unistd.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,10 +56,11 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
  */
 static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
-    printf("WTF????\n");
-    cloudfs_error(__func__, "wtf");
-    cloud_init(state_.hostname);
-    return NULL;
+  cloud_init(state_.hostname);
+
+  printf("cloudfs_init()...\n");
+
+  return NULL;
 }
 
 /* @brief Deinitialize S3. After this call is complete, no libs3 function may be
@@ -79,28 +81,144 @@ static int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
     return retval;
 }
 
-static int cloudfs_mkdir(const char *path, mode_t mode){
-    cloudfs_error(__func__, "wtf");
-	printf("WTF!!!");
+static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
+    int fd;
+    
+    printf("can you see this?\n");
+    fd = open(path, fi->flags);
+    if (fd == -1)
+        return -errno;
+
+    fi->fh = fd;
+    return 0;
+}
+
+static int cloudfs_mkdir(const char *path, mode_t m) {
+    int res;
+    
+    res = mkdir(path, m);
+    if (res == -1)
+        return -errno;
+    
+    return res;
+}
+
+static int cloudfs_rmdir(const char *path){
+    int res;
+    
+    res = rmdir(path);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_unlink(const char *path){
+    int res;
+
+    res = unlink(path);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_symlink(const char *from, const char *to){
+    int res;
+
+    res = symlink(from, to);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_rename(const char *from, const char *to){
+    int res;
+
+    res = rename(from, to);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_link(const char *from, const char *to){
+    int res;
+    
+    res = link(from, to);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_chmod(const char *path, mode_t mode){
+    int res;
+    
+    res = chmod(path, mode);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_chown(const char *path, uid_t uid, gid_t gid){
+    int res;
+   // NOT SURE lchown or chown
+    res = chown(path, uid, gid);
+    if(res == -1)
+	return -errno;
+    return res;
+}
+
+static int cloudfs_truncate(const char *path, off_t len){
+    int res;
+  
+    res = truncate(path, len);
+    if(res == -1)
+    	return -errno;
+    return res;
+}
+
+static int cloudfs_ftruncate(const char *path, off_t len, struct fuse_file_info *fi){
+    int res;
+    (void) path;
+   
+    res = ftruncate(fi->fh, len);
+    if(res == -1)
+	return -errno;
 
     return 0;
 }
 
-static int cloudfs_open(const char *path UNUSED, struct fuse_file_info* fi UNUSED){
-    cloudfs_error(__func__, "wtf");
-   printf("a");
-    return 0;
-}
+//static int cloudfs_utimens(const char *path, const struct timespec ts[2]){
+  //  int res;
+//
+  //  res = utimensat(0, path, ts, AT_SYMLINK_NOFOLLOW);
+    //if(res == -1)
+//	return -errno;
+//
+  //  return res;
+//}
+
+//static int cloudfs_create(const char *path, mode_t mode, struct fuse_file_info *fi){
+  //  int fd; 
+
 
 /*
  * Functions supported by cloudfs 
  */
 static struct fuse_operations cloudfs_operations = {
     .init           = cloudfs_init,
-    .open           = cloudfs_open,
     .mkdir          = cloudfs_mkdir,
+    .open           = cloudfs_open,
+    .destroy        = cloudfs_destroy,
+    .unlink         = cloudfs_unlink,
+    .symlink        = cloudfs_symlink,
+    .rename         = cloudfs_rename,
+    .link           = cloudfs_link,
+    .chmod          = cloudfs_chmod,
+    .chown          = cloudfs_chown,
+    .truncate       = cloudfs_truncate,
+    .ftruncate      = cloudfs_ftruncate,
+  //  .utimens        = cloudfs_utimes,
     .getattr        = cloudfs_getattr,
-    .destroy        = cloudfs_destroy
+    .rmdir          = cloudfs_rmdir 
 };
 
 int cloudfs_start(struct cloudfs_state *state,
@@ -113,11 +231,13 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  //argv[argc++] = "-f"; // run fuse in foreground 
+  // argv[argc++] = "-f"; // run fuse in foreground 
 
   state_  = *state;
 
+  printf("I am here\n");
+  // open("/home/student/log", )
   int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
-    
+
   return fuse_stat;
 }

@@ -103,7 +103,7 @@ int main(int argc, char **argv)
 
     struct cloudfs_state state;
     parse_arguments(argc, argv, &state);
-	printf("Hi from my cloudfs\n");
+    printf("Hi from my cloudfs\n");
     cloudfs_start(&state, argv[0]);
 
     return 0;
