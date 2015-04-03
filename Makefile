@@ -123,7 +123,7 @@ CLOUDFS_OBJS = $(BUILD)/obj/cloudfs.o \
 $(BUILD)/bin/cloudfs: $(CLOUDFS_OBJS)
 	$(QUIET_ECHO) $@: Building executable
 	@ mkdir -p $(dir $@)
-	$(VERBOSE_SHOW) gcc -o $@ $^ $(LDFLAGS) $(LIBRARY) 
+	$(VERBOSE_SHOW) gcc -o $@ $^ $(LDFLAGS) $(LIBRARY)
 
 # --------------------------------------------------------------------------
 # Example targets

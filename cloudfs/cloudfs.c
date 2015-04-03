@@ -54,9 +54,12 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
  * @param  unused param
  * @return void
  */
-void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
+static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
   cloud_init(state_.hostname);
+
+  printf("cloudfs_init()...\n");
+
   return NULL;
 }
 
@@ -83,9 +86,10 @@ int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
   return retval;
 }
 
-int cloudfs_open(const char *path, struct fuse_file_info *fi) {
+static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
     
+    printf("can you see this?\n");
     fd = open(path, fi->flags);
     if (fd == -1)
         return -errno;
@@ -94,7 +98,7 @@ int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     return 0;
 }
 
-int cloudfs_mkdir(const char *path, mode_t m) {
+static int cloudfs_mkdir(const char *path, mode_t m) {
     int res;
     
     res = mkdir(path, m);
@@ -136,11 +140,13 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  //argv[argc++] = "-f"; // run fuse in foreground 
+  // argv[argc++] = "-f"; // run fuse in foreground 
 
   state_  = *state;
 
+  printf("I am here\n");
+  // open("/home/student/log", )
   int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
-    
+
   return fuse_stat;
 }
