@@ -48,6 +48,8 @@ void write_log(const char *message) {
   if (res != total_length) {
     fprintf(stderr, "write_log() error...\n");
   }
+
+  free(message_all);
 }
 
 #define DEBUG_CLOUDFS
@@ -108,19 +110,6 @@ void cloudfs_destroy(void *data UNUSED) {
   cloud_destroy();
 }
 
-int cloudfs_getattr(const char *path UNUSED, struct stat *statbuf UNUSED)
-{
-  int retval = 0;
-
-  // 
-  // TODO:
-  //
-  // Implement this function to do whatever it is supposed to do!
-  //
-
-  return retval;
-}
-
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
 
@@ -148,6 +137,39 @@ static int cloudfs_mkdir(const char *path, mode_t m) {
     return res;
 }
 
+static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+			off_t offset, struct fuse_file_info *fi) {
+    (void) offset;
+    (void) fi;
+
+    if (strcmp(path, "/") != 0) {
+        write_log("readdir fail!\n");
+        return -ENOENT;
+    }
+    write_log("readdir success...\n");
+    filler(buf, ".", NULL, 0);
+    filler(buf, "..", NULL, 0);
+
+    return 0;
+}
+
+static int cloudfs_getattr(const char *path, struct stat *stbuf) {
+    int res;
+
+    res = 0;
+    memset(stbuf, 0, sizeof(struct stat));
+    if (strcmp(path, "/") == 0) {
+        write_log("getattr success...\n");
+        // stbuf->st_mode = S_IFDIR | 0755;
+        stbuf->st_nlink = 2;
+    } else {
+        write_log("getattr fail!\n");
+        res = -ENOENT;
+    }
+
+    return res;
+}
+
 /*
  * Functions supported by cloudfs 
  */
@@ -165,8 +187,10 @@ static struct fuse_operations cloudfs_operations = {
     // --- http://fuse.sourceforge.net/doxygen/structfuse__operations.html
     //
     //
+    .getattr	    = cloudfs_getattr,
     .mkdir          = cloudfs_mkdir,
     .open           = cloudfs_open,
+    .readdir	    = cloudfs_readdir,
     .destroy        = cloudfs_destroy,
 };
 
@@ -180,7 +204,7 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  argv[argc++] = "-f"; // run fuse in foreground 
+  // argv[argc++] = "-f"; // run fuse in foreground 
 
   state_  = *state;
 
