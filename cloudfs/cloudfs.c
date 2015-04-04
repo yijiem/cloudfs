@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -20,58 +21,69 @@
 
 #define UNUSED __attribute__((unused))
 #define MESSAGE_LENGTH 30 // single message length
+#define S_IFDIR 0040000
+#define S_IFREG 0100000
+#define DEBUG 1
 
+static const char *hello_str = "Hello World!\n";
+static const char *fuse_path = "/fuse";
 static struct cloudfs_state state_;
 static FILE *cloudfs_log;
 
-void write_log(const char *message) {
-  int res;
-  int mes_length;
-  int time_length;
-  int total_length;
+char *get_absolute_path(const char *path) {
+    char *absolute_path;
+
+    absolute_path = malloc(strlen(state_.fuse_path)+strlen(path));
+    strcpy(absolute_path, state_.fuse_path);
+    strcat(absolute_path, path);
+
+    return absolute_path;
+}
+
+void write_log(const char *format, ...) {
+  int time_length, res;
   time_t rawtime;
   struct tm *timeinfo;
-  char *message_all;
   char *time_str;
+
+  va_list ap;
+  va_start(ap, format);
 
   time(&rawtime);
   timeinfo = localtime(&rawtime);
   time_str = asctime(timeinfo);
-  mes_length = strlen(message);
   time_length = strlen(time_str);
   time_str[time_length-1] = ' '; // replace last \n with ' '
-  total_length = mes_length + time_length;
-  message_all = malloc(total_length);
-  strcpy(message_all, time_str);
-  strcat(message_all, message);
-  res = fwrite(message_all, 1, total_length, cloudfs_log);
-  if (res != total_length) {
+
+  res = fwrite(time_str, 1, time_length, cloudfs_log);
+  if (res != time_length) {
     fprintf(stderr, "write_log() error...\n");
   }
+  vfprintf(cloudfs_log, format, ap);
 
-  free(message_all);
+  fflush(cloudfs_log);
 }
 
 #define DEBUG_CLOUDFS
 
 /* @brief Debug function for cloudfs, if define DEBUG_CLOUDFS, this function will print
  *        debug infomation. Otherwise, it won't.
- * 
+ *
  * @param  func: pointer to the function name
  * @param  error_str: error message
  * @return retval: -errno
  */
 #ifdef DEBUG_CLOUDFS
 inline int cloudfs_error(const char *func, const char *error_str)
-#else 
+#else
 inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
 #endif
 {
     int retval = -errno;
 
-#ifdef DEBUG_CLOUDFS    
+#ifdef DEBUG_CLOUDFS
     /* Can change this line into log-styler debug function if necessary */
-    fprintf(stderr, "CloudFS Error: Func[%s]:%s\n", func, error_str);
+    write_log("CloudFS Error: Func[%s]:%s\n", func, error_str);
 #endif
 
     return retval;
@@ -80,7 +92,7 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
 
 /* @brief Initializes the FUSE file system (cloudfs) by checking if the mount points
  *        are valid, and if all is well, it mounts the file system ready for usage.
- * 
+ *
  * @param  unused param
  * @return void
  */
@@ -112,45 +124,88 @@ void cloudfs_destroy(void *data UNUSED) {
 
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
+    char *absolute_path;
 
-    fd = open(path, fi->flags);
+    absolute_path = get_absolute_path(path);
+    fd = open(absolute_path, fi->flags);
     if (fd == -1) {
         write_log("open error!\n");
         return -errno;
     }
-    write_log("open success...\n");
-    write_log("path=\n");
-    write_log(path);
+    write_log("open success...path=%s\n", path);
     fi->fh = fd;
     return 0;
 }
 
 static int cloudfs_mkdir(const char *path, mode_t m) {
     int res;
-    
-    res = mkdir(path, m);
+    char *absolute_path;
+
+    absolute_path = get_absolute_path(path);
+    res = mkdir(absolute_path, m);
     if (res == -1) {
-	write_log("mkdir error!\n");
+	write_log("mkdir error! path=%s\n", absolute_path);
         return -errno;
     }
-    write_log("mkdir success...\n");
+    write_log("mkdir success...path=%s\n", absolute_path);
+
+    free(absolute_path);
     return res;
 }
 
 static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			off_t offset, struct fuse_file_info *fi) {
+    int retstat;
+    DIR *dp;
+    struct dirent *de;
+    char *absolute_path;
+
     (void) offset;
     (void) fi;
+    retstat = 0;
+    absolute_path = get_absolute_path(path);
+    write_log("readdir called, path=%s\n", path);
+    dp = (DIR *) (uintptr_t) fi->fh;
+    if (dp == 0) {
+        dp = opendir(absolute_path);
+    }
+    if (DEBUG) write_log("DEBUG: dp=0x%08x\n", (int)dp);
+    de = readdir(dp);
+    if (de == 0) {
+        write_log("readdir(dp) error! dp=0x%08x\n", (int)dp);
+	return -errno;
+    }
 
+    do {
+        write_log("calling filler with name %s\n", de->d_name);
+	if (filler(buf, de->d_name, NULL, 0) != 0)
+	    return -ENOMEM;
+    } while ((de = readdir(dp)) != NULL);
+
+    free(absolute_path);
+
+    return retstat;
+/*
     if (strcmp(path, "/") != 0) {
-        write_log("readdir fail!\n");
+        write_log("readdir fail! path=%s\n", path);
         return -ENOENT;
     }
-    write_log("readdir success...\n");
-    filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
+    if (filler(buf, ".", NULL, 0) == 1) {
+        write_log("error occurs when filler(1)! path=%s\n", path);
+	return -ENOENT;
+    }
+    if (filler(buf, "..", NULL, 0) == 1) {
+	write_log("error occurs when filler(2)! path=%s\n", path);
+	return -ENOENT;
+    }
+    if (filler(buf, fuse_path + 1, NULL, 0) == 1) {
+	write_log("error occurs when filler(3)! path=%s\n", path);
+	return -ENOENT;
+    }
+    write_log("readdir success...path=%s\n", path);
 
     return 0;
+*/
 }
 
 static int cloudfs_getattr(const char *path, struct stat *stbuf) {
@@ -159,11 +214,16 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
     res = 0;
     memset(stbuf, 0, sizeof(struct stat));
     if (strcmp(path, "/") == 0) {
-        write_log("getattr success...\n");
-        // stbuf->st_mode = S_IFDIR | 0755;
+        write_log("getattr success....path=%s\n", path);
+        stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
+    } else if (strcmp(path, fuse_path) == 0) {
+        write_log("getattr success....path=%s\n", path);
+        stbuf->st_mode = S_IFREG | 0444;
+	stbuf->st_nlink = 1;
+	stbuf->st_size = strlen(hello_str);
     } else {
-        write_log("getattr fail!\n");
+        write_log("getattr fail!  path=%s\n", path);
         res = -ENOENT;
     }
 
@@ -171,7 +231,7 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
 }
 
 /*
- * Functions supported by cloudfs 
+ * Functions supported by cloudfs
  */
 static struct fuse_operations cloudfs_operations = {
     .init           = cloudfs_init,
@@ -204,7 +264,7 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  // argv[argc++] = "-f"; // run fuse in foreground 
+  // argv[argc++] = "-f"; // run fuse in foreground
 
   state_  = *state;
 
