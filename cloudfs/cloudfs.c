@@ -1,3 +1,8 @@
+/*
+ * you should never call mkdir(), or opendir() on fuse path
+ * because these are used for the established file system like ext2(our ssd).
+ */
+
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -25,8 +30,8 @@
 #define S_IFREG 0100000
 #define DEBUG 1
 
-static const char *hello_str = "Hello World!\n";
-static const char *fuse_path = "/fuse";
+// static const char *hello_str = "Hello World!\n";
+// static const char *fuse_path = "/fuse";
 static struct cloudfs_state state_;
 static FILE *cloudfs_log;
 
@@ -34,7 +39,7 @@ char *get_absolute_path(const char *path) {
     char *absolute_path;
 
     absolute_path = malloc(strlen(state_.fuse_path)+strlen(path));
-    strcpy(absolute_path, state_.fuse_path);
+    strcpy(absolute_path, state_.ssd_path); // do the trick
     strcat(absolute_path, path);
 
     return absolute_path;
@@ -130,10 +135,12 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     fd = open(absolute_path, fi->flags);
     if (fd == -1) {
         write_log("open error!\n");
+	free(absolute_path);
         return -errno;
     }
     write_log("open success...path=%s\n", path);
     fi->fh = fd;
+    free(absolute_path);
     return 0;
 }
 
@@ -145,6 +152,7 @@ static int cloudfs_mkdir(const char *path, mode_t m) {
     res = mkdir(absolute_path, m);
     if (res == -1) {
 	write_log("mkdir error! path=%s\n", absolute_path);
+	free(absolute_path);
         return -errno;
     }
     write_log("mkdir success...path=%s\n", absolute_path);
@@ -162,29 +170,34 @@ static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     (void) offset;
     (void) fi;
+
     retstat = 0;
     absolute_path = get_absolute_path(path);
-    write_log("readdir called, path=%s\n", path);
+    write_log("readdir called.... path=%s\n", path);
     dp = (DIR *) (uintptr_t) fi->fh;
     if (dp == 0) {
+        write_log("dp==0.... path=%s\n", absolute_path);
         dp = opendir(absolute_path);
     }
     if (DEBUG) write_log("DEBUG: dp=0x%08x\n", (int)dp);
     de = readdir(dp);
     if (de == 0) {
         write_log("readdir(dp) error! dp=0x%08x\n", (int)dp);
+	free(absolute_path);
 	return -errno;
     }
 
     do {
         write_log("calling filler with name %s\n", de->d_name);
 	if (filler(buf, de->d_name, NULL, 0) != 0)
+	    write_log("error not enough memory in filler!\n");
+	    free(absolute_path);
 	    return -ENOMEM;
     } while ((de = readdir(dp)) != NULL);
 
     free(absolute_path);
-
     return retstat;
+
 /*
     if (strcmp(path, "/") != 0) {
         write_log("readdir fail! path=%s\n", path);
@@ -210,10 +223,21 @@ static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 static int cloudfs_getattr(const char *path, struct stat *stbuf) {
     int res;
+    char *absolute_path;
 
     res = 0;
+    absolute_path = get_absolute_path(path);
     memset(stbuf, 0, sizeof(struct stat));
+    if (stat(absolute_path, stbuf) != 0) {
+	write_log("getattr fail! path=%s\n", absolute_path);
+	free(absolute_path);
+	return -errno;
+    }
+    write_log("getattr success.... path=%s\n", absolute_path);
+
+/*
     if (strcmp(path, "/") == 0) {
+	stat()
         write_log("getattr success....path=%s\n", path);
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
@@ -226,9 +250,23 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
         write_log("getattr fail!  path=%s\n", path);
         res = -ENOENT;
     }
-
+*/
+    free(absolute_path);
     return res;
 }
+
+static int cloudfs_utime(const char *path, struct utimbuf *buf) {
+    int res;
+    char *absolute_path;
+
+    absolute_path = get_absolute_path(path);
+    res = utime(absolute_path, buf);
+    if (res == -1)
+	return -errno;
+
+    return 0;
+}
+
 
 /*
  * Functions supported by cloudfs
@@ -252,6 +290,7 @@ static struct fuse_operations cloudfs_operations = {
     .open           = cloudfs_open,
     .readdir	    = cloudfs_readdir,
     .destroy        = cloudfs_destroy,
+    .utime	    = cloudfs_utime,
 };
 
 int cloudfs_start(struct cloudfs_state *state,
