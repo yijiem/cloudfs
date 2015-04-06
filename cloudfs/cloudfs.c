@@ -35,8 +35,8 @@
 
 // static const char *hello_str = "Hello World!\n";
 // static const char *fuse_path = "/fuse";
-static struct cloudfs_state state_;
-static FILE *cloudfs_log;
+// static struct cloudfs_state state_;
+// static FILE *cloudfs_log;
 
 struct cloudfs_dirp {
     DIR *dp;
