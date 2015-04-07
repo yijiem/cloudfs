@@ -51,11 +51,26 @@ typedef struct file_handler {
     meta_d md; // metadata field
 }fh_t;
 
-void fh_t_initialize(fh_t *fh, const char *path, uint8_t dirty, int fd, int rf) {
-    if (dirty == 1) fh->dirty = dirty; // change dirty bit only when it is 1
+int is_remote(const char *path) {
+    if (strstr(path, proxy_suffix) != NULL) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+int fh_t_initialize(fh_t *fh, const char *path, int fd, int rf) {
     fh->fd = fd;
     fh->remote_flag = rf;
-    lstat(path, &(fh->md.st));
+    if (rf == 0) {
+	lstat(path, &(fh->md.st));
+    } else {
+	if (fread(&(fh->md.st), sizeof(struct meta_d), 1, fd) < 0) {
+            write_log("read meta_d into fh_t fail!   path=%s\n", path);
+	    return -errno;
+        }
+    }
+    return 0;
 }
 
 fh_t *fh_t_new() {
@@ -261,7 +276,7 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
 	   free(absolute_path);
     	   return -errno;
 	}
-        fh_t_initialize(fi_fh, absolute_path, 1, fd); // dirty bit is 1
+        fh_t_initialize(fi_fh, absolute_path, 0);
     } else {
         fd = fi_fh->fd;
     }
@@ -282,19 +297,27 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
     char *absolute_path;
     fh_t *fi_fh;
+    int remote;
+
+    remote = is_remote(path);
 
     fi_fh = fh_t_new();
     absolute_path = get_absolute_path(path);
     fd = open(absolute_path, fi->flags);
     if (fd == -1) {
-        write_log("open error!\n");
+        write_log("open error!   path=%s\n", absolute_path);
 	free(absolute_path);
         free(fi_fh);
         return -errno;
     }
 
-    write_log("open success...path=%s\n", path);
-    fh_t_initialize(fi_fh, absolute_path, 0, fd, 0); // do not change dirty bit
+    write_log("open success...path=%s\n", absolute_path);
+    if (fh_t_initialize(fi_fh, absolute_path, fd, remote) < 0) { // do not change dirty bit
+        free(absolute_path);
+	close(fd);
+	free(fi_fh);
+	return -errno;
+    }
     fi->fh = fi_fh;
 
     free(absolute_path);
@@ -315,7 +338,7 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 
     res = pread(fi_fh->fd, buf, size, offset);
     if (res == -1) {
-        write_log("read fail!   fi->fh=%d\n", fi->fh);
+        write_log("read fail!   fd=%d\n", fi_fh->fd);
         return -errno;
     }
 
@@ -389,7 +412,7 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
 	return -errno;
     }
 
-    write_log("getattr success.... path=%s\n", absolute_path);
+    write_log("getattr success....path=%s\n", absolute_path);
     free(absolute_path);
     return res;
 }
@@ -400,6 +423,10 @@ static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
 
     fi_fh = (fh_t *) (uintptr_t) fi;
     // TODO:
+    write_log("fgetattr called....\n");
+    statbuf = &(fi_fh->md.st);
+    write_log("fgetattr success....\n");
+    return 0;
 }
 
 /*
@@ -684,6 +711,7 @@ static int cloudfs_ftruncate(const char *path, off_t off,
     return 0;
 }
 
+/*
 static int cloudfs_fgetattr(const char *path, struct stat *stbuf,
 			struct fuse_file_info *fi) {
     int res;
@@ -698,6 +726,7 @@ static int cloudfs_fgetattr(const char *path, struct stat *stbuf,
     write_log("fgetattr success....\n");
     return 0;
 }
+*/
 
 /*
  * Functions supported by cloudfs
