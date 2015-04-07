@@ -28,6 +28,8 @@
 #include <unistd.h>
 
 #include "cloudapi.h"
+#include "../cloudfs/cloudfs.h"
+
 #define UNUSED __attribute__((unused))
 
 #if CLOUD_LOCAL_DEBUG
@@ -148,11 +150,11 @@ void cloud_destroy() {
 void cloud_print_error()
 {
   if (statusG < S3StatusErrorAccessDenied) {
-    fprintf(stderr, "Return status: %s\n", S3_get_status_name(statusG));
+    write_log("Return status: %s\n", S3_get_status_name(statusG));
   }
   else {
-    fprintf(stderr, "Return status: %s\n", S3_get_status_name(statusG));
-    fprintf(stderr, "%s\n", errorDetailsG);
+    write_log("Return status: %s\n", S3_get_status_name(statusG));
+    write_log("%s\n", errorDetailsG);
   }
 }
 
@@ -332,9 +334,9 @@ static int putObjectDataCallback(int bufferSize, char *buffer,
     if (data->remainingLength && !data->noStatus) {
         // Avoid a weird bug in MingW, which won't print the second integer
         // value properly when it's in the same call, so print separately
-        printf("%llu bytes remaining ", 
+        write_log("%llu bytes remaining ", 
                (unsigned long long) data->remainingLength);
-        printf("(%d%% complete) ...\n",
+        write_log("(%d%% complete) ...\n",
                (int) (((data->contentLength - 
                         data->remainingLength) * 100) /
                       data->contentLength));

@@ -20,12 +20,12 @@ struct cloudfs_state {
   char no_dedup;
 };
 
-static struct cloudfs_state state_;
-static FILE *cloudfs_log;
+extern struct cloudfs_state state_;
+extern FILE *cloudfs_log;
 
 int cloudfs_start(struct cloudfs_state* state,
                   const char* fuse_runtime_name);
 void cloudfs_get_fullpath(const char *path, char *fullpath);
-char *get_absolute_path(const char *path);
-void write_log(const char *format, ...);
+extern char *get_absolute_path(const char *path);
+extern void write_log(const char *format, ...);
 #endif

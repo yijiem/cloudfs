@@ -23,6 +23,7 @@
 #include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
+// #include <pthread.h>
 #include "cloudapi.h"
 #include "cloudfs.h"
 #include "dedup.h"
@@ -34,8 +35,38 @@
 
 // static const char *hello_str = "Hello World!\n";
 // static const char *fuse_path = "/fuse";
-// static struct cloudfs_state state_;
-// static FILE *cloudfs_log;
+struct cloudfs_state state_;
+FILE *cloudfs_log;
+char *proxy_suffix = ".proxy";
+
+typedef struct meta_d {
+    struct stat st;
+}meta_d;
+
+typedef struct file_handler {
+    int fd;
+    int remote_flag; // 0:local  1:remote
+    char *tmp_file;
+    uint8_t dirty;
+    meta_d md; // metadata field
+}fh_t;
+
+void fh_t_initialize(fh_t *fh, const char *path, uint8_t dirty, int fd, int rf) {
+    if (dirty == 1) fh->dirty = dirty; // change dirty bit only when it is 1
+    fh->fd = fd;
+    fh->remote_flag = rf;
+    lstat(path, &(fh->md.st));
+}
+
+fh_t *fh_t_new() {
+    fh_t *fh;
+
+    fh = (fh_t *) malloc(sizeof(fh_t));
+    fh->fd = 0;
+    fh->tmp_file = NULL;
+    fh->dirty = 0;
+    fh->remote_flag = 0;
+}
 
 struct cloudfs_dirp {
     DIR *dp;
@@ -46,7 +77,7 @@ struct cloudfs_dirp {
 static inline struct DIR *get_dirp(const char *path, struct fuse_file_info *fi) {
     DIR *dp;
 
-    dp = (DIR *) (uintptr_t) fi->fh;
+    dp = (DIR *) (uintptr_t) fi;
     if (dp == 0) {
         write_log("dp==0.... path=%s\n", path);
         dp = opendir(path);
@@ -125,15 +156,16 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
   int err;
 
-  s3_init();
-  //s3_list_service();
   cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
+  write_log("create log success...\n");
+  s3_init();
+  s3_list_service();
+/*
   err = errno;
   if (err != 0) {
     fprintf(stderr, "create log fail! errno=%d\n", err);
   }
-  write_log("create log success...\n");
-
+*/
   return NULL;
 }
 
@@ -218,19 +250,20 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
     int fd;
     ssize_t res;
     char *absolute_path;
+    fh_t *fi_fh;
 
-    (void) fi;
+    fi_fh = (fh_t *) (uintptr_t) fi->fh;
     absolute_path = get_absolute_path(path);
-    if (fi->fh == 0) {
-        fd = open(absolute_path, O_WRONLY);
+    if (fi_fh->fd == 0) {
+        fd = open(absolute_path, O_RDWR);
         if (fd == -1) {
 	   write_log("write fail!   path=%s\n", absolute_path);
 	   free(absolute_path);
     	   return -errno;
 	}
-	fi->fh = fd;
+        fh_t_initialize(fi_fh, absolute_path, 1, fd); // dirty bit is 1
     } else {
-        fd = fi->fh;
+        fd = fi_fh->fd;
     }
 
     res = pwrite(fd, buf, size, offset);
@@ -248,17 +281,21 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
     char *absolute_path;
+    fh_t *fi_fh;
 
-    // write_log("are you kidding me?\n");
+    fi_fh = fh_t_new();
     absolute_path = get_absolute_path(path);
     fd = open(absolute_path, fi->flags);
     if (fd == -1) {
         write_log("open error!\n");
 	free(absolute_path);
+        free(fi_fh);
         return -errno;
     }
+
     write_log("open success...path=%s\n", path);
-    fi->fh = fd;
+    fh_t_initialize(fi_fh, absolute_path, 0, fd, 0); // do not change dirty bit
+    fi->fh = fi_fh;
 
     free(absolute_path);
     return 0;
@@ -268,9 +305,15 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 			struct fuse_file_info *fi) {
     int res;
     char *absolute_path;
+    fh_t *fi_fh;
 
     write_log("read called....\n");
-    res = pread(fi->fh, buf, size, offset);
+    fi_fh = (fh_t *) (uintptr_t) fi->fh;
+
+    // TODO: read into buffer from cloud file
+    // TODO: read into fi_fh->tmp_file
+
+    res = pread(fi_fh->fd, buf, size, offset);
     if (res == -1) {
         write_log("read fail!   fi->fh=%d\n", fi->fh);
         return -errno;
@@ -296,55 +339,9 @@ static int cloudfs_mkdir(const char *path, mode_t m) {
     free(absolute_path);
     return res;
 }
-/*
-static inline struct cloudfs_dirp *get_dirp(struct fuse_file_info *fi) {
-    return (struct cloudfs_dirp *) (uintptr_t) fi->fh;
-}
-*/
 
 static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			off_t offset, struct fuse_file_info *fi) {
-/*
-    char *absolute_path;
-    struct cloudfs_dirp *d = get_dirp(fi);
-
-    absolute_path = get_absolute_path(path);
-    if (d->dp == 0) {
-        write_log("dp==0.... path=%s\n", absolute_path);
-        d->dp = opendir(absolute_path);
-    }
-
-    if (offset != d->offset) { // not recently opened
-        seekdir(d->dp, offset);
-        d->entry = NULL;
-        d->offset = offset;
-    }
-    while (1) {
-        struct stat st;
-        off_t nextoff;
-
-        if (!d->entry) {
-            d->entry = readdir(d->dp);
-            if (!d->entry)
-		break;
-        }
-
-        memset(&st, 0, sizeof(st));
-        st.st_ino = d->entry->d_ino;
-        st.st_mode = d->entry->d_type << 12;
-        nextoff = telldir(d->dp);
-        if (filler(buf, d->entry->d_name, &st, nextoff))
-		break;
-
-        d->entry = NULL;
-        d->offset = nextoff;
-    }
-
-    write_log("readdir success....path=%s\n", absolute_path);
-    free(absolute_path);
-    return 0;
-*/
-
     int retstat;
     DIR *dp;
     struct dirent *de;
@@ -395,6 +392,14 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
     write_log("getattr success.... path=%s\n", absolute_path);
     free(absolute_path);
     return res;
+}
+
+static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
+			struct fuse_file_info *fi) {
+    fh_t *fi_fh;
+
+    fi_fh = (fh_t *) (uintptr_t) fi;
+    // TODO:
 }
 
 /*
@@ -469,13 +474,13 @@ static int cloudfs_rename(const char *from, const char *to) {
 
 static int cloudfs_flush(const char *path, struct fuse_file_info *file_info) {
     int res;
+    fh_t *fi_fh;
     (void) path;
-    // char *absolute_path;
 
-    // absolute_path = get_absolute_path(path);
-    res = close(dup(file_info->fh));
+    fi_fh = (fh_t *) (uintptr_t) file_info->fh;
+    res = close(dup(fi_fh->fd));
     if (res == -1) {
-        write_log("flush fail!   file_info->fh=%d\n", (int) file_info->fh);
+        write_log("flush fail!   fd=%d\n", (int) fi_fh->fd);
         return -errno;
     }
 
@@ -483,25 +488,72 @@ static int cloudfs_flush(const char *path, struct fuse_file_info *file_info) {
 }
 
 static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
-    struct stat stbuf;
+    // struct stat stbuf;
     char *absolute_path;
+    fh_t *fi_fh;
 
-    absolute_path = get_absolute_path(path);
     write_log("calling release....\n");
-    lstat(absolute_path, &stbuf);
-    if (stbuf.st_size > state_.threshold) {
+    absolute_path = get_absolute_path(path);
+    fi_fh = (fh_t *) (uintptr_t) file_info->fh;
+    // lstat(absolute_path, &stbuf);
+    if (fi_fh->md.st.st_size > state_.threshold) {
+        int fd, res;
+        ssize_t size;
+        char *proxy_file;
+
         write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
-			absolute_path, (int) stbuf.st_size);
+			absolute_path, (int) fi_fh->md.st.st_size);
         s3_cloudfs_put(path);
+
+
         // TODO: make local file as a proxy file
+        res = unlink(absolute_path);
+        if (res < 0) {
+            write_log("release: unlink file fail!   path=%s\n", absolute_path);
+	    free(absolute_path);
+	    close(fi_fh->fd);
+	    free(fi_fh);
+	    return -errno;
+        }
+        proxy_file = malloc(strlen(absolute_path)+strlen(proxy_suffix));
+        strcpy(proxy_file, absolute_path);
+	strcat(proxy_file, proxy_suffix);
+        fd = open(proxy_file, O_RDWR); // open same file in truncate mode
+	if (fd < 0) {
+            write_log("release: open proxy file fail!   path=%s\n",
+			proxy_file);
+	    free(absolute_path);
+	    free(proxy_file);
+            close(fi_fh->fd);
+	    free(fi_fh);
+	    return -errno;
+        }
+        size = write(fd, &(fi_fh->md), sizeof(meta_d));
+	if (size < 0) {
+            write_log("release: write metadata to proxy file fail!   path=%s\n",
+			proxy_file);
+	    free(absolute_path);
+	    free(proxy_file);
+            close(fi_fh->fd);
+	    close(fd);
+	    free(fi_fh);
+	    return -errno;
+        }
+        close(fd);
+        free(proxy_file);
+
     } else {
         write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
-			absolute_path, (int) stbuf.st_size);
+			absolute_path, (int) fi_fh->md.st.st_size);
     }
 
+    s3_list_service();
+    s3_list_bucket();
+
     write_log("release success....\n");
-    close(file_info->fh);
+    close(fi_fh->fd);
     free(absolute_path);
+    free(fi_fh);
     return 0;
 }
 
@@ -709,7 +761,7 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  argv[argc++] = "-f"; // run fuse in foreground
+  // argv[argc++] = "-f"; // run fuse in foreground
 
   state_  = *state;
 

@@ -9,8 +9,8 @@
 #include "cloudfs.h"
 #include "s3_cloudfs.h"
 
-// static char *my_bucket = "yijiem";
-// static FILE *infile;
+char *my_bucket = "yijiem";
+FILE *infile;
 
 int list_service(const char *bucket_name) {
     write_log("s3cloudfs: list service: %s....\n", bucket_name);
@@ -50,6 +50,9 @@ int s3_init() {
     write_log("s3cloudfs: s3 init on host:%s....\n", state_.hostname);
     cloud_init(state_.hostname);
     cloud_print_error();
+    write_log("s3cloudfs: create bucket %s\n", my_bucket);
+    cloud_create_bucket(my_bucket);
+    cloud_print_error();
     return 0;
 }
 
@@ -61,7 +64,7 @@ int s3_list_service() {
 }
 
 int s3_list_bucket() {
-    write_log("s3cloudfs: s3 list bucket....\n");
+    write_log("s3cloudfs: s3 list bucket....%s\n", my_bucket);
     cloud_list_bucket(my_bucket, list_bucket);
     cloud_print_error();
     return 0;

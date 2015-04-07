@@ -1,10 +1,10 @@
 #include <sys/types.h>
 
-static char *my_bucket = "yijiem";
-static FILE *infile;
+extern char *my_bucket;
+extern FILE *infile;
 
-int s3_init();
-int s3_list_service();
-int s3_list_bucket();
-int s3_cloudfs_put(const char *path);
-int s3_cloudfs_close();
+extern int s3_init();
+extern int s3_list_service();
+extern int s3_list_bucket();
+extern int s3_cloudfs_put(const char *path);
+extern int s3_cloudfs_close();
