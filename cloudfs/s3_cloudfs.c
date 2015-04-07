@@ -7,9 +7,10 @@
 #include <strings.h>
 #include "cloudapi.h"
 #include "cloudfs.h"
+#include "s3_cloudfs.h"
 
-static char *my_bucket = "yijiem";
-static FILE *infile;
+// static char *my_bucket = "yijiem";
+// static FILE *infile;
 
 int list_service(const char *bucket_name) {
     write_log("s3cloudfs: list service: %s....\n", bucket_name);

@@ -26,11 +26,10 @@
 #include "cloudapi.h"
 #include "cloudfs.h"
 #include "dedup.h"
+#include "s3_cloudfs.h"
 
 #define UNUSED __attribute__((unused))
 #define MESSAGE_LENGTH 30 // single message length
-// #define S_IFDIR 0040000
-// #define S_IFREG 0100000
 #define DEBUG 1
 
 // static const char *hello_str = "Hello World!\n";
@@ -43,7 +42,6 @@ struct cloudfs_dirp {
     struct dirent *entry;
     off_t offset;
 };
-
 
 static inline struct DIR *get_dirp(const char *path, struct fuse_file_info *fi) {
     DIR *dp;
@@ -127,8 +125,8 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
   int err;
 
-  cloud_init(state_.hostname);
-
+  s3_init();
+  //s3_list_service();
   cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
   err = errno;
   if (err != 0) {
@@ -146,7 +144,9 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  * @retrun void
  */
 void cloudfs_destroy(void *data UNUSED) {
-  cloud_destroy();
+    (void *) data;
+    s3_cloudfs_close();
+    fclose(cloudfs_log);
 }
 
 static int cloudfs_mknod(const char *path, mode_t mode, dev_t dev) {
@@ -483,9 +483,25 @@ static int cloudfs_flush(const char *path, struct fuse_file_info *file_info) {
 }
 
 static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
-    (void) path;
+    struct stat stbuf;
+    char *absolute_path;
 
+    absolute_path = get_absolute_path(path);
+    write_log("calling release....\n");
+    lstat(absolute_path, &stbuf);
+    if (stbuf.st_size > state_.threshold) {
+        write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
+			absolute_path, (int) stbuf.st_size);
+        s3_cloudfs_put(path);
+        // TODO: make local file as a proxy file
+    } else {
+        write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
+			absolute_path, (int) stbuf.st_size);
+    }
+
+    write_log("release success....\n");
     close(file_info->fh);
+    free(absolute_path);
     return 0;
 }
 
@@ -636,6 +652,7 @@ static int cloudfs_fgetattr(const char *path, struct stat *stbuf,
  */
 static struct fuse_operations cloudfs_operations = {
     .init           = cloudfs_init,
+    .destroy	    = cloudfs_destroy,
     //
     // TODO
     //
@@ -657,7 +674,6 @@ static struct fuse_operations cloudfs_operations = {
     .mknod	    = cloudfs_mknod,
     .truncate	    = cloudfs_truncate,
     .readdir	    = cloudfs_readdir,
-    .destroy        = cloudfs_destroy,
     // .utime	    = cloudfs_utime,
     .getxattr	    = cloudfs_getxattr,
     .setxattr	    = cloudfs_setxattr,
@@ -693,15 +709,11 @@ int cloudfs_start(struct cloudfs_state *state,
   argv[argc] = (char *) malloc(1024 * sizeof(char));
   strcpy(argv[argc++], state->fuse_path);
   argv[argc++] = "-s"; // set the fuse mode to single thread
-  // argv[argc++] = "-f"; // run fuse in foreground
+  argv[argc++] = "-f"; // run fuse in foreground
 
   state_  = *state;
 
-  printf("I am here\n");
-
   int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
-
-  fclose(cloudfs_log);
 
   return fuse_stat;
 }
