@@ -48,7 +48,7 @@ typedef struct file_handler {
     int remote_flag; // 0:local  1:remote
     char *tmp_file;
     uint8_t dirty;
-    meta_d md; // metadata field
+    meta_d *md; // metadata field
 }fh_t;
 
 int is_remote(const char *path) {
@@ -60,13 +60,24 @@ int is_remote(const char *path) {
 }
 
 int fh_t_initialize(fh_t *fh, const char *path, int fd, int rf) {
+    write_log("I am all over it\n");
     fh->fd = fd;
+    write_log("what?\n");
     fh->remote_flag = rf;
     if (rf == 0) {
-	lstat(path, &(fh->md.st));
+	write_log("Sb call for an exterminator?\n");
+
+	if (lstat(path, &(fh->md->st)) < 0) {
+            write_log("fh_t_initialize: lstat fail!   path=%s\n", path);
+	    return -errno;
+        }
+
+        write_log("I'm gone\n");
     } else {
-	if (fread(&(fh->md.st), sizeof(struct meta_d), 1, fd) < 0) {
-            write_log("read meta_d into fh_t fail!   path=%s\n", path);
+	write_log("you are here?\n");
+
+	if (read(fd, &(fh->md->st), sizeof(struct meta_d)) < 0) {
+            write_log("fh_t_initialize: read meta_d into fh_t fail!   path=%s\n", path);
 	    return -errno;
         }
     }
@@ -81,6 +92,9 @@ fh_t *fh_t_new() {
     fh->tmp_file = NULL;
     fh->dirty = 0;
     fh->remote_flag = 0;
+    fh->md = (meta_d *) malloc(sizeof(meta_d));
+
+    return fh;
 }
 
 struct cloudfs_dirp {
@@ -89,7 +103,7 @@ struct cloudfs_dirp {
     off_t offset;
 };
 
-static inline struct DIR *get_dirp(const char *path, struct fuse_file_info *fi) {
+static inline DIR *get_dirp(const char *path, struct fuse_file_info *fi) {
     DIR *dp;
 
     dp = (DIR *) (uintptr_t) fi;
@@ -169,18 +183,11 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
  */
 static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
-  int err;
-
   cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
   write_log("create log success...\n");
   s3_init();
   s3_list_service();
-/*
-  err = errno;
-  if (err != 0) {
-    fprintf(stderr, "create log fail! errno=%d\n", err);
-  }
-*/
+
   return NULL;
 }
 
@@ -191,7 +198,6 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
  * @retrun void
  */
 void cloudfs_destroy(void *data UNUSED) {
-    (void *) data;
     s3_cloudfs_close();
     fclose(cloudfs_log);
 }
@@ -276,7 +282,7 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
 	   free(absolute_path);
     	   return -errno;
 	}
-        fh_t_initialize(fi_fh, absolute_path, 0);
+        fh_t_initialize(fi_fh, absolute_path, fd, 0);
     } else {
         fd = fi_fh->fd;
     }
@@ -310,15 +316,16 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
         free(fi_fh);
         return -errno;
     }
-
-    write_log("open success...path=%s\n", absolute_path);
+    write_log("I am here  remote=%d\n", remote);
     if (fh_t_initialize(fi_fh, absolute_path, fd, remote) < 0) { // do not change dirty bit
+	write_log("open fail! fh_t_initialize error!   path=%s\n", absolute_path);
         free(absolute_path);
 	close(fd);
 	free(fi_fh);
 	return -errno;
     }
     fi->fh = fi_fh;
+    write_log("open success...path=%s\n", absolute_path);
 
     free(absolute_path);
     return 0;
@@ -424,7 +431,7 @@ static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
     fi_fh = (fh_t *) (uintptr_t) fi;
     // TODO:
     write_log("fgetattr called....\n");
-    statbuf = &(fi_fh->md.st);
+    statbuf = &(fi_fh->md->st);
     write_log("fgetattr success....\n");
     return 0;
 }
@@ -523,13 +530,13 @@ static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
     absolute_path = get_absolute_path(path);
     fi_fh = (fh_t *) (uintptr_t) file_info->fh;
     // lstat(absolute_path, &stbuf);
-    if (fi_fh->md.st.st_size > state_.threshold) {
+    if (fi_fh->md->st.st_size > state_.threshold) {
         int fd, res;
         ssize_t size;
         char *proxy_file;
 
         write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
-			absolute_path, (int) fi_fh->md.st.st_size);
+			absolute_path, (int) fi_fh->md->st.st_size);
         s3_cloudfs_put(path);
 
 
@@ -555,7 +562,7 @@ static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
 	    free(fi_fh);
 	    return -errno;
         }
-        size = write(fd, &(fi_fh->md), sizeof(meta_d));
+        size = write(fd, fi_fh->md, sizeof(meta_d));
 	if (size < 0) {
             write_log("release: write metadata to proxy file fail!   path=%s\n",
 			proxy_file);
@@ -571,7 +578,7 @@ static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
 
     } else {
         write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
-			absolute_path, (int) fi_fh->md.st.st_size);
+			absolute_path, (int) fi_fh->md->st.st_size);
     }
 
     s3_list_service();
