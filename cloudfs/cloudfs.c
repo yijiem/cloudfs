@@ -37,7 +37,6 @@
 // static const char *fuse_path = "/fuse";
 struct cloudfs_state state_;
 FILE *cloudfs_log;
-char *proxy_suffix = ".proxy";
 
 /*
 typedef struct meta_d {
@@ -52,14 +51,6 @@ typedef struct file_handler {
     uint8_t dirty;
     // meta_d *md; // metadata field
 }fh_t;
-
-int is_proxy(const char *path) {
-    if (strstr(path, proxy_suffix) != NULL) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
 
 int fh_t_initialize(fh_t *fh, const char *path, int fd, int pf) {
     fh->fd = fd;
@@ -276,45 +267,6 @@ static int cloudfs_truncate(const char *path, off_t size) {
     return 0;
 }
 
-static int cloudfs_write(const char *path, const char *buf, size_t size,
-			off_t offset, struct fuse_file_info *fi) {
-    int fd;
-    ssize_t res;
-    char *absolute_path;
-    fh_t *fi_fh;
-
-    fi_fh = (fh_t *) (uintptr_t) fi->fh;
-    absolute_path = get_absolute_path(path);
-    if (fi_fh->fd == 0) {
-        int proxy;
-
-        proxy = is_proxy(path);
-        fi_fh = fh_t_new();
-        fh_t_initialize(fi_fh, absolute_path, fd, proxy);
-        fd = open(absolute_path, O_RDWR);
-        if (fd == -1) {
-	   write_log("write fail!   path=%s\n", absolute_path);
-	   free(absolute_path);
-    	   return -errno;
-	}
-
-    } else {
-        fd = fi_fh->fd;
-    }
-
-    res = pwrite(fd, buf, size, offset);
-    fi_fh->dirty = 1; // set dirty bit to 1
-    if (res == -1) {
-	write_log("write fail!   path=%s\n", absolute_path);
-	res = -errno;
-    } else {
-	write_log("write success....path=%s\n", absolute_path);
-    }
-
-    free(absolute_path);
-    return res;
-}
-
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
     char *absolute_path;
@@ -322,35 +274,29 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     fh_t *fi_fh;
 
     absolute_path = get_absolute_path(path);
+    write_log("open file call....path=%s\n", absolute_path);
+    fi_fh = fh_t_new();
+    metadata_path = get_metadata_path(path);
+    if (access(metadata_path, F_OK) != -1) { // is proxy file
+        fi_fh->proxy = 1;
+        // get file from cloud
+        write_log("proxy file on local....get from cloud and make tmp file....\n");
+        s3_cloudfs_get(path);
+    }
+
     fd = open(absolute_path, fi->flags);
     if (fd == -1) {
         write_log("open error!   path=%s\n", absolute_path);
 	free(absolute_path);
+        free(metadata_path);
+        free(fi_fh);
         return -errno;
     }
-
-    fi_fh = fh_t_new();
     fi_fh->fd = fd;
-    metadata_path = get_metadata_path(path);
-    if (access(metadata_path, F_OK) != -1) { // is proxy file
-        fi_fh->proxy = 1;
-        // TODO: get file from cloud
-    } else {
-
-    }
-
-
-
-    if (fh_t_initialize(fi_fh, absolute_path, fd, proxy) < 0) { // do not change dirty bit
-	write_log("open fail! fh_t_initialize error!   path=%s\n", absolute_path);
-        free(absolute_path);
-	close(fd);
-	free(fi_fh);
-	return -errno;
-    }
 
     write_log("open success...path=%s\n", absolute_path);
     free(absolute_path);
+    free(metadata_path);
     return 0;
 }
 
@@ -360,13 +306,10 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     char *absolute_path;
     fh_t *fi_fh;
 
-    write_log("read called....\n");
+    write_log("read call....\n");
+
     fi_fh = (fh_t *) (uintptr_t) fi->fh;
-
-    // TODO: read into buffer from cloud file
-    // TODO: read into fi_fh->tmp_file
-
-    res = pread(fi_fh->fd, buf, size, offset);
+    res = pread(fi_fh->fd, buf, size, offset); // should be no difference
     if (res == -1) {
         write_log("read fail!   fd=%d\n", fi_fh->fd);
         return -errno;
@@ -376,75 +319,121 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     return res;
 }
 
-
-static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
-    // struct stat stbuf;
+static int cloudfs_write(const char *path, const char *buf, size_t size,
+			off_t offset, struct fuse_file_info *fi) {
+    int fd;
+    ssize_t res;
     char *absolute_path;
     fh_t *fi_fh;
 
-    write_log("calling release....\n");
-    absolute_path = get_absolute_path(path);
-    fi_fh = (fh_t *) (uintptr_t) file_info->fh;
-    // lstat(absolute_path, &stbuf);
-    if (fi_fh->md->st->st_size > state_.threshold) {
-        int fd, res;
-        ssize_t size;
-        char *proxy_file;
+    write_log("write call....relative path=%s\n", path);
 
-        write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
-			absolute_path, (int) fi_fh->md->st->st_size);
-        s3_cloudfs_put(path);
-
-
-        // TODO: make local file as a proxy file
-        res = unlink(absolute_path);
-        if (res < 0) {
-            write_log("release: unlink file fail!   path=%s\n", absolute_path);
-	    free(absolute_path);
-	    close(fi_fh->fd);
-	    free(fi_fh);
-	    return -errno;
-        }
-        proxy_file = malloc(strlen(absolute_path)+strlen(proxy_suffix));
-        strcpy(proxy_file, absolute_path);
-	strcat(proxy_file, proxy_suffix);
-        fd = open(proxy_file, O_RDWR); // open same file in truncate mode
-	if (fd < 0) {
-            write_log("release: open proxy file fail!   path=%s\n",
-			proxy_file);
-	    free(absolute_path);
-	    free(proxy_file);
-            close(fi_fh->fd);
-	    free(fi_fh);
-	    return -errno;
-        }
-        size = write(fd, fi_fh->md, sizeof(meta_d));
-	if (size < 0) {
-            write_log("release: write metadata to proxy file fail!   path=%s\n",
-			proxy_file);
-	    free(absolute_path);
-	    free(proxy_file);
-            close(fi_fh->fd);
-	    close(fd);
-	    free(fi_fh);
-	    return -errno;
-        }
-        close(fd);
-        free(proxy_file);
-
-    } else {
-        write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
-			absolute_path, (int) fi_fh->md->st->st_size);
+    fi_fh = (fh_t *) (uintptr_t) fi->fh;
+    if (fi_fh->proxy) { // proxy file
+        fi_fh->dirty = 1; // set dirty bit
     }
 
+    fd = fi_fh->fd;
+    res = pwrite(fd, buf, size, offset);
+    if (res == -1) {
+	write_log("write fail!   relative path=%s\n", path);
+	res = -errno;
+        return res;
+    }
+
+    write_log("write success....relative path=%s\n", path);
+    return res;
+}
+
+static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
+    struct stat *stbuf;
+    char *absolute_path;
+    char *metadata_path;
+    int fd, res;
+    fh_t *fi_fh;
+
+    write_log("calling release....relative path=%s\n", path);
+
+    res = 0;
+    absolute_path = get_absolute_path(path);
+    metadata_path = get_metadata_path(path);
+    if (lstat(absolute_path, stbuf) < 0) {
+        write_log("get file stat(no matter tmp or permanent) fail!\n");
+        res = -errno;
+        goto FINISH;
+    }
+    fi_fh = (fh_t *) (uintptr_t) fi->fh;
+    if (fi_fh->proxy) {
+        if (fi_fh->dirty) {
+	    // TODO: if current file size < threshold
+	    // maintain in ssd and delete file in cloud and the metadata file
+            write_log("file is dirty....flush to s3....\n");
+            s3_cloudfs_put(path);
+            fd = open(metadata_path, O_RDWR | O_TRUNC);
+            if (fd < 0) {
+                write_log("open and truncate old metadata file fail!\n");
+                res = -errno;
+                free(stbuf);
+		goto FINISH;
+            }
+            if (write(fd, stbuf, sizeof(struct stat)) < 0) {
+                write_log("write to metadata file fail!\n");
+                res = -errno;
+                free(stbuf);
+                close(fd);
+                goto FINISH;
+            }
+            close(fd);
+        }
+	// do not dirty or finish dealing dirty
+        // delete tmp file
+        if (unlink(absolute_path) < 0) {
+            write_log("unlink file fail!\n");
+            res = -errno;
+            free(stbuf);
+            goto FINISH;
+        }
+    } else { // not proxy file
+        if (stbuf->st_size > state_.threshold) {
+            write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
+			absolute_path, stbuf->st_size);
+            s3_cloudfs_put(path);
+            fd = open(metadata_path, O_RDWR | O_TRUNC);
+            if (fd < 0) {
+                write_log("open new metadata file fail!\n");
+                res = -errno;
+                free(stbuf);
+		goto FINISH;
+            }
+            if (write(fd, stbuf, sizeof(struct stat)) < 0) {
+                write_log("write to metadata file fail!\n");
+                res = -errno;
+                free(stbuf);
+                close(fd);
+                goto FINISH;
+            }
+            close(fd);
+            if (unlink(absolute_path) < 0) {
+                write_log("unlink file fail!\n");
+                res = -errno;
+                free(stbuf);
+                goto FINISH;
+            }
+        } else {
+            write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
+			absolute_path, stbuf->st_size);
+        }
+    }
+    write_log("release success....\n");
     s3_list_service();
     s3_list_bucket();
 
-    write_log("release success....\n");
+FINISH:
     close(fi_fh->fd);
     free(absolute_path);
+    free(metadata_path);
     free(fi_fh);
-    return 0;
+    return res;
 }
 
 static int cloudfs_getattr(const char *path, struct stat *stbuf) {
