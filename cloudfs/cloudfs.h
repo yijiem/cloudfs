@@ -12,6 +12,7 @@
 struct cloudfs_state {
   char ssd_path[MAX_PATH_LEN];
   char fuse_path[MAX_PATH_LEN];
+  char metadata_path[MAX_PATH_LEN];
   char hostname[MAX_HOSTNAME_LEN];
   int ssd_size;
   int threshold;

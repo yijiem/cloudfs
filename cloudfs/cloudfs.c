@@ -39,19 +39,21 @@ struct cloudfs_state state_;
 FILE *cloudfs_log;
 char *proxy_suffix = ".proxy";
 
+/*
 typedef struct meta_d {
-    struct stat st;
+    struct stat *st;
 }meta_d;
+*/
 
 typedef struct file_handler {
     int fd;
-    int remote_flag; // 0:local  1:remote
+    int proxy_flag; // 0:local  1:remote
     char *tmp_file;
     uint8_t dirty;
-    meta_d *md; // metadata field
+    // meta_d *md; // metadata field
 }fh_t;
 
-int is_remote(const char *path) {
+int is_proxy(const char *path) {
     if (strstr(path, proxy_suffix) != NULL) {
         return 1;
     } else {
@@ -59,28 +61,25 @@ int is_remote(const char *path) {
     }
 }
 
-int fh_t_initialize(fh_t *fh, const char *path, int fd, int rf) {
-    write_log("I am all over it\n");
+int fh_t_initialize(fh_t *fh, const char *path, int fd, int pf) {
     fh->fd = fd;
-    write_log("what?\n");
-    fh->remote_flag = rf;
+    fh->proxy_flag = pf;
+    // TODO: maybe initialize tmp_file
+/*
     if (rf == 0) {
-	write_log("Sb call for an exterminator?\n");
-
-	if (lstat(path, &(fh->md->st)) < 0) {
+	if (lstat(path, fh->md->st) < 0) {
             write_log("fh_t_initialize: lstat fail!   path=%s\n", path);
 	    return -errno;
         }
-
-        write_log("I'm gone\n");
+        write_log("do sth. forward...fi_fh->md->st->st_size=%d\n",
+			fh->md->st->st_size);
     } else {
-	write_log("you are here?\n");
-
-	if (read(fd, &(fh->md->st), sizeof(struct meta_d)) < 0) {
+	if (read(fd, fh->md, sizeof(meta_d)) < 0) {
             write_log("fh_t_initialize: read meta_d into fh_t fail!   path=%s\n", path);
 	    return -errno;
         }
     }
+*/
     return 0;
 }
 
@@ -93,6 +92,7 @@ fh_t *fh_t_new() {
     fh->dirty = 0;
     fh->remote_flag = 0;
     fh->md = (meta_d *) malloc(sizeof(meta_d));
+    fh->md->st = (struct stat *) malloc(sizeof(struct stat));
 
     return fh;
 }
@@ -115,11 +115,21 @@ static inline DIR *get_dirp(const char *path, struct fuse_file_info *fi) {
     return dp;
 }
 
+char *get_metadata_path(const char *path) {
+    char *metadata_path;
+
+    metadata_path = malloc(strlen(state_.metadata_path)+strlen(path));
+    strcpy(metadata_path, state_.metadata_path);
+    strcat(metadata_path, path);
+
+    return metadata_path;
+}
+
 char *get_absolute_path(const char *path) {
     char *absolute_path;
 
-    absolute_path = malloc(strlen(state_.fuse_path)+strlen(path));
-    strcpy(absolute_path, state_.ssd_path); // do the trick
+    absolute_path = malloc(strlen(state_.ssd_path)+strlen(path));
+    strcpy(absolute_path, state_.ssd_path);
     strcat(absolute_path, path);
 
     return absolute_path;
@@ -276,18 +286,24 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
     fi_fh = (fh_t *) (uintptr_t) fi->fh;
     absolute_path = get_absolute_path(path);
     if (fi_fh->fd == 0) {
+        int proxy;
+
+        proxy = is_proxy(path);
+        fi_fh = fh_t_new();
+        fh_t_initialize(fi_fh, absolute_path, fd, proxy);
         fd = open(absolute_path, O_RDWR);
         if (fd == -1) {
 	   write_log("write fail!   path=%s\n", absolute_path);
 	   free(absolute_path);
     	   return -errno;
 	}
-        fh_t_initialize(fi_fh, absolute_path, fd, 0);
+
     } else {
         fd = fi_fh->fd;
     }
 
     res = pwrite(fd, buf, size, offset);
+    fi_fh->dirty = 1; // set dirty bit to 1
     if (res == -1) {
 	write_log("write fail!   path=%s\n", absolute_path);
 	res = -errno;
@@ -302,31 +318,38 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
 static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     int fd;
     char *absolute_path;
+    char *metadata_path;
     fh_t *fi_fh;
-    int remote;
 
-    remote = is_remote(path);
-
-    fi_fh = fh_t_new();
     absolute_path = get_absolute_path(path);
     fd = open(absolute_path, fi->flags);
     if (fd == -1) {
         write_log("open error!   path=%s\n", absolute_path);
 	free(absolute_path);
-        free(fi_fh);
         return -errno;
     }
-    write_log("I am here  remote=%d\n", remote);
-    if (fh_t_initialize(fi_fh, absolute_path, fd, remote) < 0) { // do not change dirty bit
+
+    fi_fh = fh_t_new();
+    fi_fh->fd = fd;
+    metadata_path = get_metadata_path(path);
+    if (access(metadata_path, F_OK) != -1) { // is proxy file
+        fi_fh->proxy = 1;
+        // TODO: get file from cloud
+    } else {
+
+    }
+
+
+
+    if (fh_t_initialize(fi_fh, absolute_path, fd, proxy) < 0) { // do not change dirty bit
 	write_log("open fail! fh_t_initialize error!   path=%s\n", absolute_path);
         free(absolute_path);
 	close(fd);
 	free(fi_fh);
 	return -errno;
     }
-    fi->fh = fi_fh;
-    write_log("open success...path=%s\n", absolute_path);
 
+    write_log("open success...path=%s\n", absolute_path);
     free(absolute_path);
     return 0;
 }
@@ -351,6 +374,107 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 
     write_log("read success....\n");
     return res;
+}
+
+
+static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
+    // struct stat stbuf;
+    char *absolute_path;
+    fh_t *fi_fh;
+
+    write_log("calling release....\n");
+    absolute_path = get_absolute_path(path);
+    fi_fh = (fh_t *) (uintptr_t) file_info->fh;
+    // lstat(absolute_path, &stbuf);
+    if (fi_fh->md->st->st_size > state_.threshold) {
+        int fd, res;
+        ssize_t size;
+        char *proxy_file;
+
+        write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
+			absolute_path, (int) fi_fh->md->st->st_size);
+        s3_cloudfs_put(path);
+
+
+        // TODO: make local file as a proxy file
+        res = unlink(absolute_path);
+        if (res < 0) {
+            write_log("release: unlink file fail!   path=%s\n", absolute_path);
+	    free(absolute_path);
+	    close(fi_fh->fd);
+	    free(fi_fh);
+	    return -errno;
+        }
+        proxy_file = malloc(strlen(absolute_path)+strlen(proxy_suffix));
+        strcpy(proxy_file, absolute_path);
+	strcat(proxy_file, proxy_suffix);
+        fd = open(proxy_file, O_RDWR); // open same file in truncate mode
+	if (fd < 0) {
+            write_log("release: open proxy file fail!   path=%s\n",
+			proxy_file);
+	    free(absolute_path);
+	    free(proxy_file);
+            close(fi_fh->fd);
+	    free(fi_fh);
+	    return -errno;
+        }
+        size = write(fd, fi_fh->md, sizeof(meta_d));
+	if (size < 0) {
+            write_log("release: write metadata to proxy file fail!   path=%s\n",
+			proxy_file);
+	    free(absolute_path);
+	    free(proxy_file);
+            close(fi_fh->fd);
+	    close(fd);
+	    free(fi_fh);
+	    return -errno;
+        }
+        close(fd);
+        free(proxy_file);
+
+    } else {
+        write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
+			absolute_path, (int) fi_fh->md->st->st_size);
+    }
+
+    s3_list_service();
+    s3_list_bucket();
+
+    write_log("release success....\n");
+    close(fi_fh->fd);
+    free(absolute_path);
+    free(fi_fh);
+    return 0;
+}
+
+static int cloudfs_getattr(const char *path, struct stat *stbuf) {
+    int res;
+    char *absolute_path;
+
+    res = 0;
+    absolute_path = get_absolute_path(path);
+    memset(stbuf, 0, sizeof(struct stat));
+    if (lstat(absolute_path, stbuf) != 0) {
+	write_log("getattr fail! path=%s\n", absolute_path);
+	free(absolute_path);
+	return -errno;
+    }
+
+    write_log("getattr success....path=%s\n", absolute_path);
+    free(absolute_path);
+    return res;
+}
+
+static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
+			struct fuse_file_info *fi) {
+    fh_t *fi_fh;
+
+    fi_fh = (fh_t *) (uintptr_t) fi;
+    // TODO:
+    write_log("fgetattr called....\n");
+    statbuf = fi_fh->md->st;
+    write_log("fgetattr success....\n");
+    return 0;
 }
 
 static int cloudfs_mkdir(const char *path, mode_t m) {
@@ -404,36 +528,6 @@ static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     free(absolute_path);
     return retstat;
 
-}
-
-static int cloudfs_getattr(const char *path, struct stat *stbuf) {
-    int res;
-    char *absolute_path;
-
-    res = 0;
-    absolute_path = get_absolute_path(path);
-    memset(stbuf, 0, sizeof(struct stat));
-    if (lstat(absolute_path, stbuf) != 0) {
-	write_log("getattr fail! path=%s\n", absolute_path);
-	free(absolute_path);
-	return -errno;
-    }
-
-    write_log("getattr success....path=%s\n", absolute_path);
-    free(absolute_path);
-    return res;
-}
-
-static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
-			struct fuse_file_info *fi) {
-    fh_t *fi_fh;
-
-    fi_fh = (fh_t *) (uintptr_t) fi;
-    // TODO:
-    write_log("fgetattr called....\n");
-    statbuf = &(fi_fh->md->st);
-    write_log("fgetattr success....\n");
-    return 0;
 }
 
 /*
@@ -518,76 +612,6 @@ static int cloudfs_flush(const char *path, struct fuse_file_info *file_info) {
         return -errno;
     }
 
-    return 0;
-}
-
-static int cloudfs_release(const char *path, struct fuse_file_info *file_info) {
-    // struct stat stbuf;
-    char *absolute_path;
-    fh_t *fi_fh;
-
-    write_log("calling release....\n");
-    absolute_path = get_absolute_path(path);
-    fi_fh = (fh_t *) (uintptr_t) file_info->fh;
-    // lstat(absolute_path, &stbuf);
-    if (fi_fh->md->st.st_size > state_.threshold) {
-        int fd, res;
-        ssize_t size;
-        char *proxy_file;
-
-        write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
-			absolute_path, (int) fi_fh->md->st.st_size);
-        s3_cloudfs_put(path);
-
-
-        // TODO: make local file as a proxy file
-        res = unlink(absolute_path);
-        if (res < 0) {
-            write_log("release: unlink file fail!   path=%s\n", absolute_path);
-	    free(absolute_path);
-	    close(fi_fh->fd);
-	    free(fi_fh);
-	    return -errno;
-        }
-        proxy_file = malloc(strlen(absolute_path)+strlen(proxy_suffix));
-        strcpy(proxy_file, absolute_path);
-	strcat(proxy_file, proxy_suffix);
-        fd = open(proxy_file, O_RDWR); // open same file in truncate mode
-	if (fd < 0) {
-            write_log("release: open proxy file fail!   path=%s\n",
-			proxy_file);
-	    free(absolute_path);
-	    free(proxy_file);
-            close(fi_fh->fd);
-	    free(fi_fh);
-	    return -errno;
-        }
-        size = write(fd, fi_fh->md, sizeof(meta_d));
-	if (size < 0) {
-            write_log("release: write metadata to proxy file fail!   path=%s\n",
-			proxy_file);
-	    free(absolute_path);
-	    free(proxy_file);
-            close(fi_fh->fd);
-	    close(fd);
-	    free(fi_fh);
-	    return -errno;
-        }
-        close(fd);
-        free(proxy_file);
-
-    } else {
-        write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
-			absolute_path, (int) fi_fh->md->st.st_size);
-    }
-
-    s3_list_service();
-    s3_list_bucket();
-
-    write_log("release success....\n");
-    close(fi_fh->fd);
-    free(absolute_path);
-    free(fi_fh);
     return 0;
 }
 

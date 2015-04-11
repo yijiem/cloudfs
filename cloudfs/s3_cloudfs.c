@@ -11,6 +11,7 @@
 
 char *my_bucket = "yijiem";
 FILE *infile;
+FILE *outfile;
 
 int list_service(const char *bucket_name) {
     write_log("s3cloudfs: list service: %s....\n", bucket_name);
@@ -25,6 +26,11 @@ int list_bucket(const char *key, time_t modified_time, uint64_t size) {
 int put_buffer(char *buffer, int buffer_length) {
     write_log("s3cloudfs: put buffer length %d....\n", buffer_length);
     return fread(buffer, 1, buffer_length, infile);
+}
+
+int get_buffer(char *buffer, int buffer_length) {
+    write_log("s3cloudfs: get buffer length %d....\n", buffer_length);
+    return fwrite(buffer, 1, buffer_length, outfile);
 }
 
 char *get_key(const char *path) {
@@ -89,6 +95,23 @@ int s3_cloudfs_put(const char *path) {
     lstat(absolute_path, &stat_buf);
     cloud_put_object(my_bucket, key, stat_buf.st_size, put_buffer);
     fclose(infile);
+    cloud_print_error();
+
+    free(absolute_path);
+    free(key);
+    return 0;
+}
+
+int s3_cloudfs_get(const char *path) {
+    char *key;
+    char *absolute_path;
+
+    write_log("s3cloudfs: get object....\n");
+    absolute_path = get_absolute_path(path);
+    key = get_key(path);
+    outfile = fopen(absolute_path, "wb");
+    cloud_get_object(my_bucket, key, get_buffer);
+    fclose(outfile);
     cloud_print_error();
 
     free(absolute_path);

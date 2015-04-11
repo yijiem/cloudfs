@@ -1,7 +1,8 @@
 #include <sys/types.h>
 
 extern char *my_bucket;
-extern FILE *infile;
+// extern FILE *infile;
+// extern FILE *outfile;
 
 extern int s3_init();
 extern int s3_list_service();
