@@ -1,6 +1,6 @@
 #include <sys/types.h>
 
-extern char *my_bucket;
+extern const char *my_bucket;
 // extern FILE *infile;
 // extern FILE *outfile;
 

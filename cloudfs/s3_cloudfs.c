@@ -9,7 +9,7 @@
 #include "cloudfs.h"
 #include "s3_cloudfs.h"
 
-char *my_bucket = "yijiem";
+const char *my_bucket = "yijiem";
 FILE *infile;
 FILE *outfile;
 
@@ -28,7 +28,7 @@ int put_buffer(char *buffer, int buffer_length) {
     return fread(buffer, 1, buffer_length, infile);
 }
 
-int get_buffer(char *buffer, int buffer_length) {
+int get_buffer(const char *buffer, int buffer_length) {
     write_log("s3cloudfs: get buffer length %d....\n", buffer_length);
     return fwrite(buffer, 1, buffer_length, outfile);
 }

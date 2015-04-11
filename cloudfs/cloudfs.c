@@ -46,17 +46,16 @@ typedef struct meta_d {
 
 typedef struct file_handler {
     int fd;
-    int proxy_flag; // 0:local  1:remote
-    char *tmp_file;
+    int proxy; // 0:local  1:remote
     uint8_t dirty;
     // meta_d *md; // metadata field
 }fh_t;
-
+/*
 int fh_t_initialize(fh_t *fh, const char *path, int fd, int pf) {
     fh->fd = fd;
     fh->proxy_flag = pf;
     // TODO: maybe initialize tmp_file
-/*
+
     if (rf == 0) {
 	if (lstat(path, fh->md->st) < 0) {
             write_log("fh_t_initialize: lstat fail!   path=%s\n", path);
@@ -70,20 +69,18 @@ int fh_t_initialize(fh_t *fh, const char *path, int fd, int pf) {
 	    return -errno;
         }
     }
-*/
+
     return 0;
 }
+*/
 
 fh_t *fh_t_new() {
     fh_t *fh;
 
     fh = (fh_t *) malloc(sizeof(fh_t));
     fh->fd = 0;
-    fh->tmp_file = NULL;
     fh->dirty = 0;
-    fh->remote_flag = 0;
-    fh->md = (meta_d *) malloc(sizeof(meta_d));
-    fh->md->st = (struct stat *) malloc(sizeof(struct stat));
+    fh->proxy = 0;
 
     return fh;
 }
@@ -273,8 +270,9 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     char *metadata_path;
     fh_t *fi_fh;
 
+    write_log("open call....path=%s\n", path);
+
     absolute_path = get_absolute_path(path);
-    write_log("open file call....path=%s\n", absolute_path);
     fi_fh = fh_t_new();
     metadata_path = get_metadata_path(path);
     if (access(metadata_path, F_OK) != -1) { // is proxy file
@@ -286,7 +284,7 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
 
     fd = open(absolute_path, fi->flags);
     if (fd == -1) {
-        write_log("open error!   path=%s\n", absolute_path);
+        write_log("open error!\n");
 	free(absolute_path);
         free(metadata_path);
         free(fi_fh);
@@ -294,7 +292,7 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
     }
     fi_fh->fd = fd;
 
-    write_log("open success...path=%s\n", absolute_path);
+    write_log("open success....\n");
     free(absolute_path);
     free(metadata_path);
     return 0;
@@ -306,7 +304,7 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
     char *absolute_path;
     fh_t *fi_fh;
 
-    write_log("read call....\n");
+    write_log("read call....path=%s\n", path);
 
     fi_fh = (fh_t *) (uintptr_t) fi->fh;
     res = pread(fi_fh->fd, buf, size, offset); // should be no difference
@@ -326,7 +324,7 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
     char *absolute_path;
     fh_t *fi_fh;
 
-    write_log("write call....relative path=%s\n", path);
+    write_log("write call....path=%s\n", path);
 
     fi_fh = (fh_t *) (uintptr_t) fi->fh;
     if (fi_fh->proxy) { // proxy file
@@ -336,12 +334,12 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
     fd = fi_fh->fd;
     res = pwrite(fd, buf, size, offset);
     if (res == -1) {
-	write_log("write fail!   relative path=%s\n", path);
+	write_log("write fail!\n");
 	res = -errno;
         return res;
     }
 
-    write_log("write success....relative path=%s\n", path);
+    write_log("write success....\n");
     return res;
 }
 
@@ -352,17 +350,18 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
     int fd, res;
     fh_t *fi_fh;
 
-    write_log("calling release....relative path=%s\n", path);
+    write_log("calling release....path=%s\n", path);
 
     res = 0;
+    fi_fh = (fh_t *) (uintptr_t) fi->fh;
     absolute_path = get_absolute_path(path);
     metadata_path = get_metadata_path(path);
+    stbuf = (struct stat *) malloc(sizeof(struct stat));
     if (lstat(absolute_path, stbuf) < 0) {
         write_log("get file stat(no matter tmp or permanent) fail!\n");
         res = -errno;
         goto FINISH;
     }
-    fi_fh = (fh_t *) (uintptr_t) fi->fh;
     if (fi_fh->proxy) {
         if (fi_fh->dirty) {
 	    // TODO: if current file size < threshold
@@ -373,13 +372,11 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
             if (fd < 0) {
                 write_log("open and truncate old metadata file fail!\n");
                 res = -errno;
-                free(stbuf);
 		goto FINISH;
             }
             if (write(fd, stbuf, sizeof(struct stat)) < 0) {
                 write_log("write to metadata file fail!\n");
                 res = -errno;
-                free(stbuf);
                 close(fd);
                 goto FINISH;
             }
@@ -390,7 +387,6 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
         if (unlink(absolute_path) < 0) {
             write_log("unlink file fail!\n");
             res = -errno;
-            free(stbuf);
             goto FINISH;
         }
     } else { // not proxy file
@@ -402,13 +398,11 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
             if (fd < 0) {
                 write_log("open new metadata file fail!\n");
                 res = -errno;
-                free(stbuf);
 		goto FINISH;
             }
             if (write(fd, stbuf, sizeof(struct stat)) < 0) {
                 write_log("write to metadata file fail!\n");
                 res = -errno;
-                free(stbuf);
                 close(fd);
                 goto FINISH;
             }
@@ -416,7 +410,6 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
             if (unlink(absolute_path) < 0) {
                 write_log("unlink file fail!\n");
                 res = -errno;
-                free(stbuf);
                 goto FINISH;
             }
         } else {
@@ -430,6 +423,7 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
 
 FINISH:
     close(fi_fh->fd);
+    free(stbuf);
     free(absolute_path);
     free(metadata_path);
     free(fi_fh);
@@ -437,23 +431,44 @@ FINISH:
 }
 
 static int cloudfs_getattr(const char *path, struct stat *stbuf) {
-    int res;
+    int res, fd;
     char *absolute_path;
+    char *metadata_path;
+
+    write_log("getattr call....path=%s\n", path);
 
     res = 0;
-    absolute_path = get_absolute_path(path);
     memset(stbuf, 0, sizeof(struct stat));
-    if (lstat(absolute_path, stbuf) != 0) {
-	write_log("getattr fail! path=%s\n", absolute_path);
-	free(absolute_path);
-	return -errno;
+    absolute_path = get_absolute_path(path);
+    metadata_path = get_metadata_path(path);
+    if (access(metadata_path, F_OK) != -1) { // is proxy file
+	fd = open(metadata_path, O_RDONLY);
+        if (fd < 0) {
+            write_log("open metadata_path fail!\n");
+	    res = -errno;
+            goto FINISH;
+        }
+	if (read(fd, stbuf, sizeof(struct stat)) < 0) {
+            write_log("read metadata fail!\n");
+	    res = -errno;
+	    goto FINISH;
+        }
+    } else {
+        if (lstat(absolute_path, stbuf) != 0) {
+	    write_log("lstat fail!\n");
+	    res = -errno;
+            goto FINISH;
+        }
     }
+    write_log("getattr success....\n");
 
-    write_log("getattr success....path=%s\n", absolute_path);
+FINISH:
     free(absolute_path);
+    free(metadata_path);
     return res;
 }
 
+/*
 static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
 			struct fuse_file_info *fi) {
     fh_t *fi_fh;
@@ -465,6 +480,7 @@ static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
     write_log("fgetattr success....\n");
     return 0;
 }
+*/
 
 static int cloudfs_mkdir(const char *path, mode_t m) {
     int res;
@@ -797,7 +813,7 @@ static struct fuse_operations cloudfs_operations = {
     .fsync	    = cloudfs_fsync,
     .utimens	    = cloudfs_utimens,
     .ftruncate	    = cloudfs_ftruncate,
-    .fgetattr	    = cloudfs_fgetattr,
+    // .fgetattr	    = cloudfs_fgetattr,
 };
 
 int cloudfs_start(struct cloudfs_state *state,
