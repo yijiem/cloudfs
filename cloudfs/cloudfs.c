@@ -204,6 +204,8 @@ static int cloudfs_mknod(const char *path, mode_t mode, dev_t dev) {
     int res;
     char *absolute_path;
 
+    write_log("mknod call....path=%s\n", path);
+
     res = 0;
     absolute_path = get_absolute_path(path);
     if (S_ISFIFO(mode)) {
@@ -251,6 +253,8 @@ static int cloudfs_truncate(const char *path, off_t size) {
     int res;
     char *absolute_path;
 
+    write_log("truncate call....path=%s\n", path);
+
     absolute_path = get_absolute_path(path);
     res = truncate(absolute_path, size);
     if (res == -1) {
@@ -291,6 +295,7 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
         return -errno;
     }
     fi_fh->fd = fd;
+    fi = (uint32_t) fi_fh;
 
     write_log("open success....\n");
     free(absolute_path);
@@ -306,7 +311,7 @@ static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 
     write_log("read call....path=%s\n", path);
 
-    fi_fh = (fh_t *) (uintptr_t) fi->fh;
+    fi_fh = (fh_t *) (uint32_t) fi->fh;
     res = pread(fi_fh->fd, buf, size, offset); // should be no difference
     if (res == -1) {
         write_log("read fail!   fd=%d\n", fi_fh->fd);
@@ -326,7 +331,7 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
 
     write_log("write call....path=%s\n", path);
 
-    fi_fh = (fh_t *) (uintptr_t) fi->fh;
+    fi_fh = (fh_t *) (uint32_t) fi->fh;
     if (fi_fh->proxy) { // proxy file
         fi_fh->dirty = 1; // set dirty bit
     }
@@ -353,7 +358,7 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
     write_log("calling release....path=%s\n", path);
 
     res = 0;
-    fi_fh = (fh_t *) (uintptr_t) fi->fh;
+    fi_fh = (fh_t *) (uint32_t) fi->fh;
     absolute_path = get_absolute_path(path);
     metadata_path = get_metadata_path(path);
     stbuf = (struct stat *) malloc(sizeof(struct stat));
@@ -433,15 +438,19 @@ FINISH:
 static int cloudfs_getattr(const char *path, struct stat *stbuf) {
     int res, fd;
     char *absolute_path;
-    char *metadata_path;
+//    char *metadata_path;
 
     write_log("getattr call....path=%s\n", path);
 
     res = 0;
     memset(stbuf, 0, sizeof(struct stat));
     absolute_path = get_absolute_path(path);
-    metadata_path = get_metadata_path(path);
+//    metadata_path = get_metadata_path(path);
+//    write_log("metadata_path=%s\n", metadata_path);
+    write_log("absolute_path=%s\n", absolute_path);
+/*
     if (access(metadata_path, F_OK) != -1) { // is proxy file
+	write_log("is proxy file....\n");
 	fd = open(metadata_path, O_RDONLY);
         if (fd < 0) {
             write_log("open metadata_path fail!\n");
@@ -453,24 +462,31 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
 	    res = -errno;
 	    goto FINISH;
         }
+        close(fd);
     } else {
+*/
+	write_log("not proxy file....\n");
         if (lstat(absolute_path, stbuf) != 0) {
-	    write_log("lstat fail!\n");
+	    write_log("lstat fail! errno=%d\n", errno);
 	    res = -errno;
             goto FINISH;
         }
-    }
+    // }
     write_log("getattr success....\n");
+    write_log("stbuf->st_size=%d\n", (int) stbuf->st_size);
 
 FINISH:
     free(absolute_path);
-    free(metadata_path);
+//    free(metadata_path);
     return res;
 }
 
-/*
+
 static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
 			struct fuse_file_info *fi) {
+    write_log("fgetattr not implemented....\n");
+    return 0;
+/*
     fh_t *fi_fh;
 
     fi_fh = (fh_t *) (uintptr_t) fi;
@@ -479,21 +495,24 @@ static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
     statbuf = fi_fh->md->st;
     write_log("fgetattr success....\n");
     return 0;
-}
 */
+}
+
 
 static int cloudfs_mkdir(const char *path, mode_t m) {
     int res;
     char *absolute_path;
 
+    write_log("mkdir call....path=%s\n", path);
+
     absolute_path = get_absolute_path(path);
     res = mkdir(absolute_path, m);
     if (res == -1) {
-	write_log("mkdir error! path=%s\n", absolute_path);
+	write_log("mkdir error!\n");
 	free(absolute_path);
         return -errno;
     }
-    write_log("mkdir success...path=%s\n", absolute_path);
+    write_log("mkdir success....\n");
 
     free(absolute_path);
     return res;
@@ -501,22 +520,24 @@ static int cloudfs_mkdir(const char *path, mode_t m) {
 
 static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			off_t offset, struct fuse_file_info *fi) {
-    int retstat;
-    DIR *dp;
+    int res;
+    // DIR *dp;
     struct dirent *de;
     char *absolute_path;
-
+    DIR *dp;
     (void) offset;
-    (void) fi;
 
-    retstat = 0;
+    write_log("readdir called.... path=%s\n", path);
+
+    res = 0;
     absolute_path = get_absolute_path(path);
-    write_log("readdir called.... path=%s\n", absolute_path);
-    dp = get_dirp(absolute_path, fi);
-    if (DEBUG) write_log("DEBUG: dp=0x%08x\n", (int)dp);
+
+    // dp = get_dirp(absolute_path, fi);
+    // if (DEBUG) write_log("DEBUG: dp=0x%08x\n", (int)dp);
+    dp = (DIR *) (uint32_t) fi->fh;
     de = readdir(dp);
     if (de == 0) {
-        write_log("readdir(dp) error! dp=0x%08x\n", (int)dp);
+        write_log("readdir error! fi->fh=%d\n", (int) fi->fh);
 	free(absolute_path);
 	return -errno;
     }
@@ -526,13 +547,32 @@ static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (filler(buf, de->d_name, NULL, 0) != 0) {
 	    write_log("error not enough memory in filler!\n");
 	    free(absolute_path);
-	    return -ENOMEM;
+	    return -errno;
 	}
     } while ((de = readdir(dp)) != NULL);
 
     free(absolute_path);
-    return retstat;
+    return res;
+}
 
+static int cloudfs_opendir(const char *path, struct fuse_file_info *fi) {
+    int res;
+    char *absolute_path;
+
+    write_log("opendir call....path=%s\n", path);
+    res = 0;
+    absolute_path = get_absolute_path(path);
+    fi->fh = (uint32_t) opendir(absolute_path);
+    if (fi->fh == 0) {
+        write_log("opendir fail!   path=%s\n", absolute_path);
+        res = -errno;
+        free(absolute_path);
+        return res;
+    }
+
+    write_log("opendir success.... path=%s\n", absolute_path);
+    free(absolute_path);
+    return res;
 }
 
 /*
@@ -553,6 +593,8 @@ static int cloudfs_getxattr(const char *path, const char *key,
 			char *value, size_t size) {
     int res;
     char *absolute_path;
+
+    write_log("getxattr call....path=%s\n", path);
 
     absolute_path = get_absolute_path(path);
     res = lgetxattr(absolute_path, key, value, size);
@@ -587,6 +629,8 @@ static int cloudfs_rmdir(const char *path) {
     int res;
     char *absolute_path;
 
+    write_log("rmdir call....path=%s\n", path);
+
     absolute_path = get_absolute_path(path);
     res = rmdir(absolute_path);
     if (res == -1) {
@@ -610,7 +654,8 @@ static int cloudfs_flush(const char *path, struct fuse_file_info *file_info) {
     fh_t *fi_fh;
     (void) path;
 
-    fi_fh = (fh_t *) (uintptr_t) file_info->fh;
+    write_log("flush call....path=%s\n", path);
+    fi_fh = (fh_t *) (uint32_t) file_info->fh;
     res = close(dup(fi_fh->fd));
     if (res == -1) {
         write_log("flush fail!   fd=%d\n", (int) fi_fh->fd);
@@ -624,6 +669,7 @@ static int cloudfs_access(const char *path, int mask) {
     int res;
     char *absolute_path;
 
+    write_log("access call....path=%s\n", path);
     absolute_path = get_absolute_path(path);
     res = access(absolute_path, mask);
     if (res == -1) {
@@ -637,33 +683,16 @@ static int cloudfs_access(const char *path, int mask) {
     return 0;
 }
 
-static int cloudfs_opendir(const char *path, struct fuse_file_info *file_info) {
-    int res;
-    char *absolute_path;
-
-    res = 0;
-    absolute_path = get_absolute_path(path);
-    file_info->fh = (uint32_t) opendir(absolute_path);
-    if (file_info->fh == 0) {
-        write_log("opendir fail!   path=%s\n", absolute_path);
-        res = -errno;
-        free(absolute_path);
-        return res;
-    }
-
-    write_log("opendir success.... path=%s\n", absolute_path);
-    free(absolute_path);
-    return res;
-}
-
 static int cloudfs_releasedir(const char *path, struct fuse_file_info *file_info) {
     // int res;
     // char *absolute_path;
     // DIR *dp;
-    struct cloudfs_dirp *d = (struct cloudfs_dirp *) (uintptr_t) file_info->fh;
+    struct cloudfs_dirp *d = (struct cloudfs_dirp *) (uint32_t) file_info->fh;
     (void) path;
     // absolute_path = get_absolute_path(path);
     // dp = get_dirp(absolute_path, file_info);
+
+    write_log("releasedir call....path=%s\n", path);
     closedir(d->dp);
     write_log("releasedir success....fi->fh=%d\n", file_info->fh);
     free(d);
@@ -680,6 +709,7 @@ static int cloudfs_unlink(const char *path) {
     int res;
     char *absolute_path;
 
+    write_log("unlink call....path=%s\n", path);
     absolute_path = get_absolute_path(path);
     res = unlink(absolute_path);
     if (res == -1) {
@@ -728,6 +758,7 @@ static int cloudfs_utimens(const char *path, const struct timespec ts[2]) {
     int res;
     char *absolute_path;
 
+    write_log("utimens call....path=%s\n", path);
     absolute_path = get_absolute_path(path);
     res = utimensat(0, absolute_path, ts, AT_SYMLINK_NOFOLLOW);
     if (res == -1) {
@@ -813,7 +844,7 @@ static struct fuse_operations cloudfs_operations = {
     .fsync	    = cloudfs_fsync,
     .utimens	    = cloudfs_utimens,
     .ftruncate	    = cloudfs_ftruncate,
-    // .fgetattr	    = cloudfs_fgetattr,
+    .fgetattr	    = cloudfs_fgetattr,
 };
 
 int cloudfs_start(struct cloudfs_state *state,
