@@ -23,7 +23,7 @@
 #include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
-// #include <pthread.h>
+#include <pthread.h>
 #include "cloudapi.h"
 #include "cloudfs.h"
 #include "dedup.h"
@@ -105,20 +105,26 @@ static inline DIR *get_dirp(const char *path, struct fuse_file_info *fi) {
 
 char *get_metadata_path(const char *path) {
     char *metadata_path;
+    char *file_key;
 
-    metadata_path = malloc(strlen(state_.metadata_path)+strlen(path));
+    file_key = get_key(path);
+    metadata_path = malloc(strlen(state_.metadata_path)+strlen(file_key)+5);
     strcpy(metadata_path, state_.metadata_path);
-    strcat(metadata_path, path);
+    strcat(metadata_path, "/");
+    strcat(metadata_path, file_key);
+    strcat(metadata_path, "\0");
 
+    free(file_key);
     return metadata_path;
 }
 
 char *get_absolute_path(const char *path) {
     char *absolute_path;
 
-    absolute_path = malloc(strlen(state_.ssd_path)+strlen(path));
+    absolute_path = malloc(strlen(state_.ssd_path)+strlen(path)+5);
     strcpy(absolute_path, state_.ssd_path);
     strcat(absolute_path, path);
+    strcat(absolute_path, "\0");
 
     return absolute_path;
 }
@@ -172,6 +178,22 @@ inline int cloudfs_error(const char *func UNUSED, const char *error_str UNUSED)
     return retval;
 }
 
+int mkdir_if_not_exist(const char *path) {
+    int res;
+    DIR *dir;
+
+    res = 0;
+    dir = opendir(path);
+    if (!dir && errno == ENOENT) {
+        res = mkdir(path, S_IRWXU | S_IRGRP | S_IXGRP);
+    } else if (!dir) {
+        res = -1;
+    } else {
+        res = closedir(dir);
+    }
+
+    return res;
+}
 
 /* @brief Initializes the FUSE file system (cloudfs) by checking if the mount points
  *        are valid, and if all is well, it mounts the file system ready for usage.
@@ -183,6 +205,9 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
   cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
   write_log("create log success...\n");
+
+  mkdir_if_not_exist(state_.metadata_path);
+
   s3_init();
   s3_list_service();
 
@@ -295,7 +320,7 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
         return -errno;
     }
     fi_fh->fd = fd;
-    fi = (uint32_t) fi_fh;
+    fi->fh = (uint64_t) (uint32_t) fi_fh;
 
     write_log("open success....\n");
     free(absolute_path);
@@ -373,7 +398,8 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
 	    // maintain in ssd and delete file in cloud and the metadata file
             write_log("file is dirty....flush to s3....\n");
             s3_cloudfs_put(path);
-            fd = open(metadata_path, O_RDWR | O_TRUNC);
+            fd = open(metadata_path, O_RDWR | O_TRUNC | O_CREAT,
+				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
             if (fd < 0) {
                 write_log("open and truncate old metadata file fail!\n");
                 res = -errno;
@@ -399,7 +425,8 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
             write_log("file: %s size is %d greater than 64KB\n	upload to cloud....\n", 
 			absolute_path, stbuf->st_size);
             s3_cloudfs_put(path);
-            fd = open(metadata_path, O_RDWR | O_TRUNC);
+            fd = open(metadata_path, O_RDWR | O_TRUNC | O_CREAT,
+				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
             if (fd < 0) {
                 write_log("open new metadata file fail!\n");
                 res = -errno;
@@ -438,17 +465,17 @@ FINISH:
 static int cloudfs_getattr(const char *path, struct stat *stbuf) {
     int res, fd;
     char *absolute_path;
-//    char *metadata_path;
+    char *metadata_path;
 
     write_log("getattr call....path=%s\n", path);
 
     res = 0;
     memset(stbuf, 0, sizeof(struct stat));
     absolute_path = get_absolute_path(path);
-//    metadata_path = get_metadata_path(path);
-//    write_log("metadata_path=%s\n", metadata_path);
+    metadata_path = get_metadata_path(path);
+    write_log("metadata_path=%s\n", metadata_path);
     write_log("absolute_path=%s\n", absolute_path);
-/*
+
     if (access(metadata_path, F_OK) != -1) { // is proxy file
 	write_log("is proxy file....\n");
 	fd = open(metadata_path, O_RDONLY);
@@ -464,20 +491,19 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
         }
         close(fd);
     } else {
-*/
 	write_log("not proxy file....\n");
         if (lstat(absolute_path, stbuf) != 0) {
 	    write_log("lstat fail! errno=%d\n", errno);
 	    res = -errno;
             goto FINISH;
         }
-    // }
+    }
     write_log("getattr success....\n");
     write_log("stbuf->st_size=%d\n", (int) stbuf->st_size);
 
 FINISH:
     free(absolute_path);
-//    free(metadata_path);
+    free(metadata_path);
     return res;
 }
 
@@ -683,21 +709,21 @@ static int cloudfs_access(const char *path, int mask) {
     return 0;
 }
 
-static int cloudfs_releasedir(const char *path, struct fuse_file_info *file_info) {
-    // int res;
-    // char *absolute_path;
-    // DIR *dp;
-    struct cloudfs_dirp *d = (struct cloudfs_dirp *) (uint32_t) file_info->fh;
-    (void) path;
-    // absolute_path = get_absolute_path(path);
-    // dp = get_dirp(absolute_path, file_info);
+static int cloudfs_releasedir(const char *path, struct fuse_file_info *fi) {
+    DIR *dp;
+    int res;
 
     write_log("releasedir call....path=%s\n", path);
-    closedir(d->dp);
-    write_log("releasedir success....fi->fh=%d\n", file_info->fh);
-    free(d);
-    // free(absolute_path);
-    return 0;
+
+    res = 0;
+    dp = (DIR *) (uint32_t) fi->fh;
+    if (closedir(dp) < 0) {
+        write_log("releasedir fail!\n");
+        res = -errno;
+    }
+
+    write_log("releasedir success....\n");
+    return res;
 }
 
 static int cloudfs_readlink(const char *path, char *buf, size_t bufsize) {
@@ -795,6 +821,42 @@ static int cloudfs_fgetattr(const char *path, struct stat *stbuf,
 }
 */
 
+void *worker(void *arg) {
+    while (1) {
+        char buf1[70];
+	char buf2[70];
+	char buf3[70];
+	char buf4[70];
+	char buf5[70];
+	char buf6[70];
+	char buf[500];
+
+        scanf("%s", buf1);
+	scanf("%s", buf2);
+	scanf("%s", buf3);
+	scanf("%s", buf4);
+	scanf("%s", buf5);
+	scanf("%s", buf6);
+
+	strcpy(buf, buf1);
+	strcat(buf, " ");
+	strcat(buf, buf2);
+	strcat(buf, " ");
+	strcat(buf, buf3);
+	strcat(buf, " ");
+	strcat(buf, buf4);
+	strcat(buf, " ");
+	strcat(buf, buf5);
+	strcat(buf, " ");
+	strcat(buf, buf6);
+
+        write_log("execute %s\n", buf);
+        system(buf);
+    }
+    pthread_exit(NULL);
+}
+
+
 /*
  * Functions supported by cloudfs
  */
@@ -852,6 +914,8 @@ int cloudfs_start(struct cloudfs_state *state,
 
   int argc = 0;
   char* argv[10];
+  pthread_t thread;
+
   argv[argc] = (char *) malloc(128 * sizeof(char));
   strcpy(argv[argc++], fuse_runtime_name);
   argv[argc] = (char *) malloc(1024 * sizeof(char));
@@ -861,7 +925,10 @@ int cloudfs_start(struct cloudfs_state *state,
 
   state_  = *state;
 
+  // pthread_create(&thread, NULL, worker, NULL);
+
   int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
 
+  pthread_exit(NULL);
   return fuse_stat;
 }
