@@ -1,10 +1,26 @@
 /*
- * you should never call mkdir(), or opendir() on fuse path
- * because these are used for the established file system like ext2(our ssd).
+ * Use symbolic link and .metadata to creat the proxy file.
+ * prevent getting file from cloud when doing ls -lr.
+ * fetching file from cloud when opening, if it is just a proxy in local ssd.
+ * create a temp file which just named as the original file name
+ * during a open->read->write session.
+ * Then, when release, checking if this file dirty or not,
+ * if it is dirty and its size <= threshold, delete file on s3 and metadata
+ * and save file in local ssd.
+ * if it is dirty and its size > threshold, then flush to the cloud,
+ * create(update) the metadata file(HOWTO? write struct stat to this file!),
+ * delete the tmp file,
+ * and make a symbolic link with the same name as the original file,
+ * and link to the metadata file.
+ * When getattr is called for this file, first check if it is a proxy in local,
+ * if it is, read the symbolic link which is pointed to metadata to struct stat
+ * then it is done!
+ * this is really a beauty!
  */
 
 #define _XOPEN_SOURCE 500
-#define AT_SYMLINK_NOFOLLOW 0x100
+// #define AT_SYMLINK_NOFOLLOW 0x100
+#define _ATFILE_SOURCE
 
 #include <ctype.h>
 #include <dirent.h>
@@ -50,6 +66,7 @@ typedef struct file_handler {
     uint8_t dirty;
     // meta_d *md; // metadata field
 }fh_t;
+
 /*
 int fh_t_initialize(fh_t *fh, const char *path, int fd, int pf) {
     fh->fd = fd;
@@ -108,11 +125,10 @@ char *get_metadata_path(const char *path) {
     char *file_key;
 
     file_key = get_key(path);
-    metadata_path = malloc(strlen(state_.metadata_path)+strlen(file_key)+5);
+    metadata_path = calloc(1, strlen(state_.metadata_path)+strlen(file_key)+5);
     strcpy(metadata_path, state_.metadata_path);
     strcat(metadata_path, "/");
     strcat(metadata_path, file_key);
-    strcat(metadata_path, "\0");
 
     free(file_key);
     return metadata_path;
@@ -121,10 +137,9 @@ char *get_metadata_path(const char *path) {
 char *get_absolute_path(const char *path) {
     char *absolute_path;
 
-    absolute_path = malloc(strlen(state_.ssd_path)+strlen(path)+5);
+    absolute_path = calloc(1, strlen(state_.ssd_path)+strlen(path)+5);
     strcpy(absolute_path, state_.ssd_path);
     strcat(absolute_path, path);
-    strcat(absolute_path, "\0");
 
     return absolute_path;
 }
@@ -308,6 +323,13 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
         fi_fh->proxy = 1;
         // get file from cloud
         write_log("proxy file on local....get from cloud and make tmp file....\n");
+	if (unlink(absolute_path) < 0) { // remove previous symbolic link
+	    write_log("unlink symbolic link file fail!\n");
+	    free(absolute_path);
+            free(metadata_path);
+            free(fi_fh);
+            return -errno;
+        }
         s3_cloudfs_get(path);
     }
 
@@ -331,7 +353,6 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
 static int cloudfs_read(const char *path, char *buf, size_t size, off_t offset,
 			struct fuse_file_info *fi) {
     int res;
-    char *absolute_path;
     fh_t *fi_fh;
 
     write_log("read call....path=%s\n", path);
@@ -351,7 +372,6 @@ static int cloudfs_write(const char *path, const char *buf, size_t size,
 			off_t offset, struct fuse_file_info *fi) {
     int fd;
     ssize_t res;
-    char *absolute_path;
     fh_t *fi_fh;
 
     write_log("write call....path=%s\n", path);
@@ -394,24 +414,32 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
     }
     if (fi_fh->proxy) {
         if (fi_fh->dirty) {
-	    // TODO: if current file size < threshold
-	    // maintain in ssd and delete file in cloud and the metadata file
-            write_log("file is dirty....flush to s3....\n");
-            s3_cloudfs_put(path);
-            fd = open(metadata_path, O_RDWR | O_TRUNC | O_CREAT,
-				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-            if (fd < 0) {
-                write_log("open and truncate old metadata file fail!\n");
-                res = -errno;
-		goto FINISH;
-            }
-            if (write(fd, stbuf, sizeof(struct stat)) < 0) {
-                write_log("write to metadata file fail!\n");
-                res = -errno;
+	    write_log("file is dirty....\n");
+	    if (stbuf->st_size <= state_.threshold) {
+		write_log("size smaller than threshold....delete file on cloud and metadata file....\n");
+		s3_delete(path);
+                unlink(metadata_path);
+		// make temp file as the real file
+	        // it's done, what? so simple, so elegant? YES!
+		goto SUCCESS;
+            } else {
+                write_log("size still greater than threshold....flush to s3....\n");
+                s3_cloudfs_put(path);
+                fd = open(metadata_path, O_RDWR | O_TRUNC | O_CREAT,
+	   			    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                if (fd < 0) {
+                    write_log("open and truncate old metadata file fail!\n");
+                    res = -errno;
+		    goto FINISH;
+                }
+                if (write(fd, stbuf, sizeof(struct stat)) < 0) {
+                    write_log("write to metadata file fail!\n");
+                    res = -errno;
+                    close(fd);
+                    goto FINISH;
+                }
                 close(fd);
-                goto FINISH;
             }
-            close(fd);
         }
 	// do not dirty or finish dealing dirty
         // delete tmp file
@@ -419,6 +447,11 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
             write_log("unlink file fail!\n");
             res = -errno;
             goto FINISH;
+        }
+        if (symlink(metadata_path, absolute_path) < 0) {
+            write_log("symlink fail!\n");
+            res = -errno;
+	    goto FINISH;
         }
     } else { // not proxy file
         if (stbuf->st_size > state_.threshold) {
@@ -444,11 +477,17 @@ static int cloudfs_release(const char *path, struct fuse_file_info *fi) {
                 res = -errno;
                 goto FINISH;
             }
+            if (symlink(metadata_path, absolute_path) < 0) {
+                write_log("symlink fail!\n");
+                res = -errno;
+	        goto FINISH;
+            }
         } else {
             write_log("file: %s size is %d smaller than 64KB\n	remain in SSD....\n",
 			absolute_path, stbuf->st_size);
         }
     }
+SUCCESS:
     write_log("release success....\n");
     s3_list_service();
     s3_list_bucket();
@@ -476,6 +515,32 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
     write_log("metadata_path=%s\n", metadata_path);
     write_log("absolute_path=%s\n", absolute_path);
 
+    if (lstat(absolute_path, stbuf) != 0) {
+        write_log("lstat fail! errno=%d\n", errno);
+	res = -errno;
+        goto FINISH;
+    }
+
+    if (S_ISLNK(stbuf->st_mode)) {
+        write_log("is symbolic link, path=%s\n", absolute_path);
+	fd = open(absolute_path, O_RDONLY);
+	if (fd < 0) {
+	    write_log("open symbolic link fail!\n");
+	    res = -errno;
+	    goto FINISH;
+	}
+        memset(stbuf, 0, sizeof(struct stat));
+	if (read(fd, stbuf, sizeof(struct stat)) < 0) {
+            write_log("read metadata fail!\n");
+	    res = -errno;
+	    goto FINISH;
+        }
+	close(fd);
+    } else {
+	write_log("not symbolic link....\n");
+    }
+
+/*
     if (access(metadata_path, F_OK) != -1) { // is proxy file
 	write_log("is proxy file....\n");
 	fd = open(metadata_path, O_RDONLY);
@@ -498,6 +563,7 @@ static int cloudfs_getattr(const char *path, struct stat *stbuf) {
             goto FINISH;
         }
     }
+*/
     write_log("getattr success....\n");
     write_log("stbuf->st_size=%d\n", (int) stbuf->st_size);
 
@@ -510,20 +576,22 @@ FINISH:
 
 static int cloudfs_fgetattr(const char *path, struct stat *statbuf,
 			struct fuse_file_info *fi) {
-    write_log("fgetattr not implemented....\n");
-    return 0;
-/*
     fh_t *fi_fh;
+    int res;
 
-    fi_fh = (fh_t *) (uintptr_t) fi;
-    // TODO:
-    write_log("fgetattr called....\n");
-    statbuf = fi_fh->md->st;
+    write_log("fgetattr call....path=%s\n", path);
+
+    res = 0;
+    fi_fh = (fh_t *) (uint32_t) fi->fh;
+    if (fstat(fi_fh->fd, statbuf) < 0) {
+        res = -errno;
+        write_log("fgetattr error!\n");
+	return res;
+    }
+
     write_log("fgetattr success....\n");
-    return 0;
-*/
+    return res;
 }
-
 
 static int cloudfs_mkdir(const char *path, mode_t m) {
     int res;
@@ -570,6 +638,10 @@ static int cloudfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     do {
         write_log("calling filler with name %s\n", de->d_name);
+	if (strcmp(de->d_name, "lost+found") == 0) {
+	    write_log("ignore lost+found....\n");
+	    continue;
+        }
 	if (filler(buf, de->d_name, NULL, 0) != 0) {
 	    write_log("error not enough memory in filler!\n");
 	    free(absolute_path);
@@ -635,23 +707,23 @@ static int cloudfs_getxattr(const char *path, const char *key,
     return 0;
 }
 
-static int cloudfs_setxattr(const char *path, const char *key,
-			const char *value, size_t size, int flags) {
+static int cloudfs_setxattr(const char *path UNUSED, const char *key UNUSED,
+			const char *value UNUSED, size_t size UNUSED, int flags UNUSED) {
     write_log("setxattr not implemented!\n");
     return 0;
 }
 
-static int cloudfs_listxattr(const char *path, char *list, size_t size) {
+static int cloudfs_listxattr(const char *path UNUSED, char *list UNUSED, size_t size UNUSED) {
     write_log("listxattr not implemented!\n");
     return 0;
 }
 
-static int cloudfs_removexattr(const char *path, const char *name) {
+static int cloudfs_removexattr(const char *path UNUSED, const char *name UNUSED) {
     write_log("removexattr not implemented!\n");
     return 0;
 }
 
-static int cloudfs_rmdir(const char *path) {
+static int cloudfs_rmdir(const char *path UNUSED) {
     int res;
     char *absolute_path;
 
@@ -670,7 +742,7 @@ static int cloudfs_rmdir(const char *path) {
     return 0;
 }
 
-static int cloudfs_rename(const char *from, const char *to) {
+static int cloudfs_rename(const char *from UNUSED, const char *to UNUSED) {
     write_log("rename not implemented!\n");
     return 0;
 }
@@ -726,7 +798,7 @@ static int cloudfs_releasedir(const char *path, struct fuse_file_info *fi) {
     return res;
 }
 
-static int cloudfs_readlink(const char *path, char *buf, size_t bufsize) {
+static int cloudfs_readlink(const char *path UNUSED, char *buf UNUSED, size_t bufsize UNUSED) {
     write_log("readlink not implemented!\n");
     return 0;
 }
@@ -734,48 +806,57 @@ static int cloudfs_readlink(const char *path, char *buf, size_t bufsize) {
 static int cloudfs_unlink(const char *path) {
     int res;
     char *absolute_path;
+    char *metadata_path;
 
     write_log("unlink call....path=%s\n", path);
+
     absolute_path = get_absolute_path(path);
+    metadata_path = get_metadata_path(path);
+    if (access(metadata_path, F_OK) != -1) { // is proxy file
+        s3_delete(path);       // remove file on s3
+	unlink(metadata_path); // remove metadata file
+    }
     res = unlink(absolute_path);
     if (res == -1) {
         write_log("unlink fail!   path=%s\n", absolute_path);
         free(absolute_path);
+        free(metadata_path);
         return -errno;
     }
 
     write_log("unlink success....path=%s\n", absolute_path);
     free(absolute_path);
+    free(metadata_path);
     return 0;
 }
 
-static int cloudfs_symlink(const char *path1, const char *path2) {
+static int cloudfs_symlink(const char *path1 UNUSED, const char *path2 UNUSED) {
     write_log("symlink not implemented!\n");
     return 0;
 }
 
-static int cloudfs_link(const char *path1, const char *path2) {
+static int cloudfs_link(const char *path1 UNUSED, const char *path2 UNUSED) {
     write_log("link not implemented!\n");
     return 0;
 }
 
-static int cloudfs_chmod(const char *path, mode_t mode) {
+static int cloudfs_chmod(const char *path UNUSED, mode_t mode UNUSED) {
     write_log("chmod not implemented!\n");
     return 0;
 }
 
-static int cloudfs_chown(const char *path, uid_t owner, gid_t group) {
+static int cloudfs_chown(const char *path UNUSED, uid_t owner UNUSED, gid_t group UNUSED) {
     write_log("chown not implemented!\n");
     return 0;
 }
 
-static int cloudfs_statfs(const char *path, struct statvfs *buf) {
+static int cloudfs_statfs(const char *path UNUSED, struct statvfs *buf UNUSED) {
     write_log("statfs not implemented!\n");
     return 0;
 }
 
-static int cloudfs_fsync(const char *path, int datasync,
-			struct fuse_file_info *file_info) {
+static int cloudfs_fsync(const char *path UNUSED, int datasync UNUSED,
+			struct fuse_file_info *file_info UNUSED) {
     write_log("fsync not implemented!\n");
     return 0;
 }
@@ -798,8 +879,8 @@ static int cloudfs_utimens(const char *path, const struct timespec ts[2]) {
     return 0;
 }
 
-static int cloudfs_ftruncate(const char *path, off_t off,
-			struct fuse_file_info *file_info) {
+static int cloudfs_ftruncate(const char *path UNUSED, off_t off UNUSED,
+			struct fuse_file_info *file_info UNUSED) {
     write_log("ftruncate not implemented!\n");
     return 0;
 }
@@ -821,6 +902,7 @@ static int cloudfs_fgetattr(const char *path, struct stat *stbuf,
 }
 */
 
+/*
 void *worker(void *arg) {
     while (1) {
         char buf1[70];
@@ -833,6 +915,7 @@ void *worker(void *arg) {
 
         scanf("%s", buf1);
 	scanf("%s", buf2);
+
 	scanf("%s", buf3);
 	scanf("%s", buf4);
 	scanf("%s", buf5);
@@ -841,6 +924,7 @@ void *worker(void *arg) {
 	strcpy(buf, buf1);
 	strcat(buf, " ");
 	strcat(buf, buf2);
+
 	strcat(buf, " ");
 	strcat(buf, buf3);
 	strcat(buf, " ");
@@ -855,7 +939,7 @@ void *worker(void *arg) {
     }
     pthread_exit(NULL);
 }
-
+*/
 
 /*
  * Functions supported by cloudfs
@@ -895,7 +979,7 @@ static struct fuse_operations cloudfs_operations = {
     .release	    = cloudfs_release,
     .access	    = cloudfs_access,
     .opendir	    = cloudfs_opendir,
-    // .releasedir	    = cloudfs_releasedir,
+    .releasedir	    = cloudfs_releasedir,
     .readlink	    = cloudfs_readlink,
     .unlink	    = cloudfs_unlink,
     .symlink	    = cloudfs_symlink,
@@ -914,7 +998,7 @@ int cloudfs_start(struct cloudfs_state *state,
 
   int argc = 0;
   char* argv[10];
-  pthread_t thread;
+  // pthread_t thread;
 
   argv[argc] = (char *) malloc(128 * sizeof(char));
   strcpy(argv[argc++], fuse_runtime_name);
@@ -929,6 +1013,6 @@ int cloudfs_start(struct cloudfs_state *state,
 
   int fuse_stat = fuse_main(argc, argv, &cloudfs_operations, NULL);
 
-  pthread_exit(NULL);
+  // pthread_exit(NULL);
   return fuse_stat;
 }

@@ -39,7 +39,7 @@ char *get_key(const char *path) {
     int length;
 
     length = strlen(path);
-    res = (char *) malloc(length);
+    res = (char *) calloc(1, length+2);
     for (i = 0; i < length; i++) {
         if (path[i] != '/') {
             res[i] = path[i];
@@ -115,6 +115,18 @@ int s3_cloudfs_get(const char *path) {
     cloud_print_error();
 
     free(absolute_path);
+    free(key);
+    return 0;
+}
+
+int s3_delete(const char *path) {
+    char *key;
+
+    write_log("s3cloudfs: delete object....\n");
+    key = get_key(path);
+    cloud_delete_object(my_bucket, key);
+    cloud_print_error();
+
     free(key);
     return 0;
 }
