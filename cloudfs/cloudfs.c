@@ -44,6 +44,7 @@
 #include "cloudfs.h"
 #include "dedup.h"
 #include "s3_cloudfs.h"
+#include "cloudlock_client.h"
 
 #define UNUSED __attribute__((unused))
 #define MESSAGE_LENGTH 30 // single message length
@@ -220,6 +221,12 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 {
   cloudfs_log = fopen("/home/student/cloudfs/log", "w+");
   write_log("create log success...\n");
+
+  if (cloudlock_connect("128.237.193.95", 4500) < 0) {
+    write_log("connect cloudlock server fail!\n");
+  } else {
+    write_log("connect cloudlock server success....\n");
+  }
 
   mkdir_if_not_exist(state_.metadata_path);
 

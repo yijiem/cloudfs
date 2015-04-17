@@ -1,6 +1,6 @@
 //
 //  cloudlock_client.c
-//  
+//
 //
 //  Created by Yijie Ma on 4/15/15.
 //
@@ -61,6 +61,7 @@ int cloudlock_connect(const char *host_ip, int host_port) {
     if(n < 0)
     {
         write_log("cloudlock: Read error, n < 0\n");
+	return -1;
     }
 
     write_log("cloudlock: read from server: %s\n", recvBuff);
