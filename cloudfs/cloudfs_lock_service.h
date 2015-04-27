@@ -19,8 +19,9 @@ extern "C" {
 typedef char *keyname;
 
 enum status {
-	OK = 0,
-	ERROR = 1,
+	ERROR = 0,
+	OK = 1,
+	UNALLOC = 2,
 };
 typedef enum status status;
 
@@ -32,12 +33,24 @@ enum type {
 };
 typedef enum type type;
 
+struct identity {
+	int id_arr[2];
+};
+typedef struct identity identity;
+
 struct lock_params {
 	keyname key;
 	type operation;
+	identity id;
 };
 typedef struct lock_params lock_params;
 
+typedef struct lock_item {
+        int i;
+        pthread_mutex_t mutex;
+        pthread_cond_t cond;
+        type operation;
+} lock_item;
 
 #define LOCKSERVICEPROG 0x20000002
 #define LOCKSERVICEVERS 1
@@ -67,14 +80,14 @@ extern int lockserviceprog_1_freeresult ();
 extern  bool_t xdr_keyname (XDR *, keyname*);
 extern  bool_t xdr_status (XDR *, status*);
 extern  bool_t xdr_type (XDR *, type*);
-extern  bool_t xdr_lock_params (XDR *, lock_params*);
+extern  bool_t xdr_identity (XDR *, identity*);
 extern  bool_t xdr_lock_params (XDR *, lock_params*);
 
 #else /* K&R C */
 extern bool_t xdr_keyname ();
 extern bool_t xdr_status ();
 extern bool_t xdr_type ();
-extern bool_t xdr_lock_params ();
+extern bool_t xdr_identity ();
 extern bool_t xdr_lock_params ();
 
 #endif /* K&R C */

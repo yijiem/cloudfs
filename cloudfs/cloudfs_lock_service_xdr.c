@@ -36,6 +36,55 @@ xdr_type (XDR *xdrs, type *objp)
 }
 
 bool_t
+xdr_identity (XDR *xdrs, identity *objp)
+{
+	register int32_t *buf;
+
+	int i;
+
+	if (xdrs->x_op == XDR_ENCODE) {
+		buf = XDR_INLINE (xdrs, ( 2 ) * BYTES_PER_XDR_UNIT);
+		if (buf == NULL) {
+			 if (!xdr_vector (xdrs, (char *)objp->id_arr, 2,
+				sizeof (int), (xdrproc_t) xdr_int))
+				 return FALSE;
+		} else {
+			{
+				register int *genp;
+
+				for (i = 0, genp = objp->id_arr;
+					i < 2; ++i) {
+					IXDR_PUT_LONG(buf, *genp++);
+				}
+			}
+		}
+		return TRUE;
+	} else if (xdrs->x_op == XDR_DECODE) {
+		buf = XDR_INLINE (xdrs, ( 2 ) * BYTES_PER_XDR_UNIT);
+		if (buf == NULL) {
+			 if (!xdr_vector (xdrs, (char *)objp->id_arr, 2,
+				sizeof (int), (xdrproc_t) xdr_int))
+				 return FALSE;
+		} else {
+			{
+				register int *genp;
+
+				for (i = 0, genp = objp->id_arr;
+					i < 2; ++i) {
+					*genp++ = IXDR_GET_LONG(buf);
+				}
+			}
+		}
+	 return TRUE;
+	}
+
+	 if (!xdr_vector (xdrs, (char *)objp->id_arr, 2,
+		sizeof (int), (xdrproc_t) xdr_int))
+		 return FALSE;
+	return TRUE;
+}
+
+bool_t
 xdr_lock_params (XDR *xdrs, lock_params *objp)
 {
 	register int32_t *buf;
@@ -43,6 +92,8 @@ xdr_lock_params (XDR *xdrs, lock_params *objp)
 	 if (!xdr_keyname (xdrs, &objp->key))
 		 return FALSE;
 	 if (!xdr_type (xdrs, &objp->operation))
+		 return FALSE;
+	 if (!xdr_identity (xdrs, &objp->id))
 		 return FALSE;
 	return TRUE;
 }

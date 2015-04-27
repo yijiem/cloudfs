@@ -105,18 +105,23 @@ int s3_cloudfs_put(const char *path) {
 int s3_cloudfs_get(const char *path) {
     char *key;
     char *absolute_path;
+    int res;
 
     write_log("s3cloudfs: get object....\n");
+    res = 0;
     absolute_path = get_absolute_path(path);
     key = get_key(path);
-    outfile = fopen(absolute_path, "wb");
-    cloud_get_object(my_bucket, key, get_buffer);
+    outfile = fopen(absolute_path, "w+");
+    if (cloud_get_object(my_bucket, key, get_buffer) != S3StatusOK) {
+	res = -1;
+    }
+
     fclose(outfile);
     cloud_print_error();
 
     free(absolute_path);
     free(key);
-    return 0;
+    return res;
 }
 
 int s3_delete(const char *path) {

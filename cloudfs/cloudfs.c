@@ -48,17 +48,23 @@
 #include <rpc/rpc.h>
 #include "cloudfs_lock_service.h"
 
-#define SERVER "localhost"
+#define SERVER "10.211.55.9"
 #define UNUSED __attribute__((unused))
 #define MESSAGE_LENGTH 30 // single message length
 #define DEBUG 1
 #define LOCK_SERVICE_ENABLE 1
+#define MAXBLOCK 15 // TODO: may change this value
+#define RETRY_TIME 100000
+
 
 void release_lock_wrapper(const char *path);
 
 struct cloudfs_state state_;
 FILE *cloudfs_log;
 CLIENT *client;
+int machine = 0; // TODO: change, right now hardcode
+int version = -1;
+int skip = 0; // skip flag
 
 typedef struct file_handler {
     int fd;
@@ -103,21 +109,37 @@ char *get_absolute_path(const char *path) {
 
 void write_log(const char *format, ...) {
   int time_length, res;
+  struct timeval time;
+  long sec;
+  long ms;
+  char timestamp[50];
+
+  memset(timestamp, 0, 50);
+/*
   time_t rawtime;
   struct tm *timeinfo;
   char *time_str;
+*/
 
   va_list ap;
   va_start(ap, format);
 
+/*
   time(&rawtime);
   timeinfo = localtime(&rawtime);
   time_str = asctime(timeinfo);
   time_length = strlen(time_str);
   time_str[time_length-1] = ' '; // replace last \n with ' '
+*/
 
-  res = fwrite(time_str, 1, time_length, cloudfs_log);
-  if (res != time_length) {
+  gettimeofday(&time, NULL);
+  sec = time.tv_sec;
+  ms = time.tv_usec / 1000;
+  sprintf(timestamp, "sec:%ld ms:%ld ", sec, ms);
+
+  res = fwrite(timestamp, 1, strlen(timestamp), cloudfs_log);
+
+  if (res != strlen(timestamp)) {
     fprintf(stderr, "write_log() error...\n");
   }
   vfprintf(cloudfs_log, format, ap);
@@ -132,8 +154,19 @@ void acquire_lock_wrapper(const char *path, struct fuse_file_info *fi) {
     enum clnt_stat retval;
     status result_1;
     lock_params lock_arg;
+    int times;
 
-RETRANSMIT:
+    times = 0;
+    result_1 = 0;
+
+RETRANSMIT1:
+    times++;
+    if (times > MAXBLOCK) {
+	skip = 1;
+	return;
+    }
+    lock_arg.id.id_arr[0] = machine;
+    lock_arg.id.id_arr[1] = version;
     lock_arg.key = get_key(path);
 
     if ((fi->flags & O_RDWR) | (fi->flags & O_WRONLY)) {
@@ -144,9 +177,10 @@ RETRANSMIT:
         if (retval != RPC_SUCCESS) {
             write_log("acquire write lock call failed!");
         }
-	if (result_1 != OK) {
+	if (result_1 != 1) {
 	    write_log("rpc return error status! retransmit!");
-	    goto RETRANSMIT;
+	    usleep(RETRY_TIME);
+	    goto RETRANSMIT1;
 	}
     } else { // if O_RDONLY or UNSPECIFIED, then grab read lock
 	lock_arg.operation = READ;
@@ -156,9 +190,10 @@ RETRANSMIT:
 	if (retval != RPC_SUCCESS) {
             write_log("acquire read lock call failed!");
         }
-	if (result_1 != OK) {
+	if (result_1 != 1) {
 	    write_log("rpc return error status! retransmit!");
-	    goto RETRANSMIT;
+	    usleep(RETRY_TIME);
+	    goto RETRANSMIT1;
 	}
     }
 }
@@ -170,18 +205,34 @@ void release_lock_wrapper(const char *path) {
     enum clnt_stat retval;
     status result_1;
     lock_params lock_arg;
+    int times;
 
-RETRANSMIT:
+    times = 0;
+    result_1 = 0;
+
+    if (skip) {
+	skip = 0;
+	return;
+    }
+
+RETRANSMIT2:
+    times++;
+    if (times > MAXBLOCK) {
+	return;
+    }
+    lock_arg.id.id_arr[0] = machine;
+    lock_arg.id.id_arr[1] = version;
     lock_arg.key = get_key(path);
-    lock_arg.operation = RELEASE;
+    lock_arg.operation = 3;
     write_log("release lock of key:%s\n", lock_arg.key);
     retval = release_1(&lock_arg, &result_1, client);
     if (retval != RPC_SUCCESS) {
         write_log("release call failed!");
     }
-    if (result_1 != OK) {
+    if (result_1 != 1) {
         write_log("rpc return error status! retransmit!");
-	goto RETRANSMIT;
+	usleep(RETRY_TIME);
+	goto RETRANSMIT2;
     }
 }
 
@@ -260,15 +311,15 @@ static void *cloudfs_init(struct fuse_conn_info *conn UNUSED)
 	  write_log("Connect to RPC server success....\n");
       }
 
-      tv2.tv_sec = 1;
+      tv2.tv_sec = 60;
       tv2.tv_usec = 0;
       clnt_control(client, CLSET_TIMEOUT, &tv2);
 
-/*
-      tv.tv_sec = 1;
-      tv.tv_usec = 0;
+
+      tv.tv_sec = 0;
+      tv.tv_usec = RETRY_TIME;
       clnt_control(client, CLSET_RETRY_TIMEOUT, &tv);
-*/
+
   }
 
   mkdir_if_not_exist(state_.metadata_path);
@@ -342,15 +393,19 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
 
     write_log("open call....path=%s\n", path);
 
+    version++; // increase version number at every open
     if (LOCK_SERVICE_ENABLE) acquire_lock_wrapper(path, fi);
 
     absolute_path = get_absolute_path(path);
     fi_fh = fh_t_new();
     metadata_path = get_metadata_path(path);
-    if (access(metadata_path, F_OK) != -1) { // is proxy file
+    unlink(absolute_path);
+    if (s3_cloudfs_get(path) == 0) { // on cloud
+    // if (access(metadata_path, F_OK) != -1) { // is proxy file
         fi_fh->proxy = 1;
         // get file from cloud
         write_log("proxy file on local....get from cloud and make tmp file....\n");
+/*
 	if (unlink(absolute_path) < 0) { // remove previous symbolic link
 	    write_log("unlink symbolic link file fail!\n");
 	    free(absolute_path);
@@ -358,7 +413,7 @@ static int cloudfs_open(const char *path, struct fuse_file_info *fi) {
             free(fi_fh);
             return -errno;
         }
-        s3_cloudfs_get(path);
+*/
     }
 
     fd = open(absolute_path, fi->flags);
